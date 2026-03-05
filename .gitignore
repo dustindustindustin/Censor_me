@@ -29,9 +29,10 @@ censor_me_projects/
 Thumbs.db
 desktop.ini
 
-# Editor
+# Editor / tool config
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 
