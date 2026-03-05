@@ -1,0 +1,181 @@
+/**
+ * Shared TypeScript types that mirror the backend Pydantic models.
+ *
+ * These types are the frontend's contract with the API. Keep them in sync with
+ * the corresponding Python models in ``backend/models/``. When the backend schema
+ * changes, update these types and the API client together.
+ *
+ * Naming convention matches the Python models exactly for easy cross-referencing.
+ */
+
+// ── PII classification ────────────────────────────────────────────────────────
+
+/**
+ * The type of sensitive information detected.
+ * Maps 1:1 to backend ``PiiType`` enum values.
+ *
+ * High-confidence (regex-based): phone, email, credit_card, ssn, account_id, postal_code
+ * Medium-confidence (NLP-based): person, address, username
+ * Special: custom (user-defined rule), manual (user-drawn), unknown (unmapped)
+ */
+export type PiiType =
+  | 'phone' | 'email' | 'person' | 'address'
+  | 'credit_card' | 'ssn' | 'account_id'
+  | 'postal_code' | 'username' | 'custom' | 'manual' | 'unknown'
+
+/**
+ * The algorithm used to track a bounding box between OCR keyframes.
+ * - csrt: OpenCV CSRT correlation filter (default, no GPU required)
+ * - sam2: Segment Anything 2 (planned v1.0, GPU required)
+ * - manual: User positioned every keyframe by hand
+ * - none: Static box, no tracking (single-frame redaction)
+ */
+export type TrackingMethod = 'csrt' | 'sam2' | 'manual' | 'none'
+
+/**
+ * User's review decision for a detected event.
+ * - pending: Not yet reviewed; shown on timeline but not exported.
+ * - accepted: Confirmed PII; included in the redacted export.
+ * - rejected: False positive; excluded from export.
+ */
+export type EventStatus = 'pending' | 'accepted' | 'rejected'
+
+/** The visual style applied to a redaction region in the exported video. */
+export type RedactionStyleType = 'blur' | 'pixelate' | 'solid_box'
+
+// ── Geometry ──────────────────────────────────────────────────────────────────
+
+/**
+ * Axis-aligned bounding box in pixel coordinates of the *source* video.
+ * The renderer scales these to the output resolution at export time.
+ */
+export interface BoundingBox {
+  x: number  // Left edge in pixels
+  y: number  // Top edge in pixels
+  w: number  // Width in pixels
+  h: number  // Height in pixels
+}
+
+/**
+ * A bounding box at a specific point in time.
+ * The renderer interpolates linearly between adjacent keyframes to produce
+ * smooth-moving redaction overlays in the exported video.
+ */
+export interface Keyframe {
+  time_ms: number  // Timestamp in milliseconds from the start of the video
+  bbox: BoundingBox
+}
+
+/** A contiguous time interval during which a redaction is active. */
+export interface TimeRange {
+  start_ms: number  // Start of the interval in milliseconds (inclusive)
+  end_ms: number    // End of the interval in milliseconds (inclusive)
+}
+
+// ── Redaction style ───────────────────────────────────────────────────────────
+
+/** Visual appearance of a redacted region in the exported video. */
+export interface RedactionStyle {
+  type: RedactionStyleType
+  /** Blur kernel size (blur), pixel block size (pixelate), or unused (solid_box). */
+  strength: number
+  /** Hex color string for solid_box type, e.g. '#000000'. */
+  color: string
+}
+
+// ── Core model ────────────────────────────────────────────────────────────────
+
+/**
+ * The central data model for a single redaction region.
+ *
+ * Both auto-detected PII events (source='auto') and user-drawn regions
+ * (source='manual') share this schema. Stored in project.json and used
+ * throughout the pipeline, UI, and export.
+ */
+export interface RedactionEvent {
+  event_id: string
+  source: 'auto' | 'manual'
+  pii_type: PiiType
+  /** Confidence score [0.0–1.0]. Always 1.0 for manual regions. */
+  confidence: number
+  /** The detected text. null in secure mode (when stored_text is disabled). */
+  extracted_text: string | null
+  time_ranges: TimeRange[]
+  /** Bounding box positions at sampled timestamps; renderer interpolates between them. */
+  keyframes: Keyframe[]
+  tracking_method: TrackingMethod
+  redaction_style: RedactionStyle
+  status: EventStatus
+}
+
+// ── Video & project ───────────────────────────────────────────────────────────
+
+/** Immutable properties of the imported source video, extracted via ffprobe. */
+export interface VideoMetadata {
+  path: string
+  file_hash: string
+  duration_ms: number
+  fps: number
+  width: number
+  height: number
+  codec: string
+  format: string
+}
+
+/**
+ * Complete state of a Censor Me project as returned by GET /projects/{id}.
+ * Mirrors the backend ``ProjectFile`` Pydantic model.
+ */
+export interface Project {
+  project_id: string
+  name: string
+  created_at: string   // ISO 8601 UTC timestamp
+  updated_at: string   // ISO 8601 UTC timestamp
+  video: VideoMetadata | null  // null until a video has been imported
+  proxy_path: string | null    // null until proxy generation completes
+  events: RedactionEvent[]
+}
+
+// ── System status ─────────────────────────────────────────────────────────────
+
+/** Hardware acceleration info returned by GET /system/status. */
+export interface GpuInfo {
+  cuda_available: boolean
+  gpu_name: string | null
+  nvenc_available: boolean
+  /** Human-readable string for the status bar, e.g. "GPU: RTX A4500". */
+  display_name: string
+}
+
+/**
+ * Backend readiness and hardware status.
+ * The frontend polls this endpoint until ready=true before showing the UI.
+ */
+export interface SystemStatus {
+  ready: boolean
+  gpu: GpuInfo
+}
+
+// ── WebSocket progress events ─────────────────────────────────────────────────
+
+/**
+ * Discriminated union of all progress events emitted by the scan pipeline.
+ *
+ * Each event has a ``stage`` field used as the discriminant. The frontend's
+ * ``useScanProgress`` hook maps these to store updates and UI changes.
+ *
+ * Lifecycle: starting → ocr (N times) → linking → link_done → tracking →
+ *            track (M times) → done
+ *
+ * Error at any stage emits: error
+ */
+export type ScanProgressEvent =
+  | { stage: 'starting'; total_ocr_frames: number }
+  | { stage: 'ocr'; frame: number; time_ms: number; ocr_boxes: number; findings_so_far: number; progress_pct: number }
+  | { stage: 'scene_change'; frame: number; time_ms: number }
+  | { stage: 'linking'; total_candidates: number }
+  | { stage: 'link_done'; events_found: number }
+  | { stage: 'tracking'; total_events: number }
+  | { stage: 'track'; event_id: string }
+  | { stage: 'done'; total_findings: number }
+  | { stage: 'error'; message: string }

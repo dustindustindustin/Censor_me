@@ -1,0 +1,74 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #1a1a1e;
+  --surface: #25252b;
+  --border: #3a3a42;
+  --text: #e8e8ee;
+  --text-muted: #888;
+  --accent: #5b7cf6;
+  --accept: #3dca7e;
+  --reject: #e05252;
+  --pending: #f0a050;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+}
+
+button:hover {
+  background: var(--border);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+button.accept { background: var(--accept); color: #fff; }
+button.reject { background: var(--reject); color: #fff; }
+
+input, select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tag.phone   { background: #3a4a8a; color: #99b3ff; }
+.tag.email   { background: #3a6a3a; color: #99ddaa; }
+.tag.person  { background: #6a3a6a; color: #ddaadd; }
+.tag.address { background: #6a5a2a; color: #ddcc88; }
+.tag.unknown { background: #444;    color: #aaa; }
+.tag.manual  { background: #4a3a6a; color: #ccaaff; }
