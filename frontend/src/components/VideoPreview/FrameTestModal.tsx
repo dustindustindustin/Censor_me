@@ -48,9 +48,11 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
   const [result, setResult] = useState<FrameTestResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Indices of candidates the user has unchecked (excluded from adding)
+  // Indices of PII candidates the user has unchecked (excluded, since they start checked)
   const [excluded, setExcluded] = useState<Set<number>>(new Set())
-  // Whether the user has committed the selection ("Add Selected" was clicked)
+  // Indices of OCR boxes the user has checked (opt-in, since they start unchecked)
+  const [selectedOcr, setSelectedOcr] = useState<Set<number>>(new Set())
+  // Whether the user has committed the selection ("Add to Censor List" was clicked)
   const [committed, setCommitted] = useState(false)
   const [committing, setCommitting] = useState(false)
   const { addEvent, setTestFrameOverlay } = useProjectStore((s) => ({
@@ -64,6 +66,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     setError(null)
     setResult(null)
     setExcluded(new Set())
+    setSelectedOcr(new Set())
     setCommitted(false)
     setTestFrameOverlay(null)  // clear stale overlay while loading
     try {
@@ -86,7 +89,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     }
   }
 
-  const handleToggle = (idx: number) => {
+  // Toggle a PII candidate in/out (they start checked; this excludes/re-includes)
+  const handleTogglePii = (idx: number) => {
     if (committed || committing) return
     setExcluded((prev) => {
       const next = new Set(prev)
@@ -96,13 +100,28 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     })
   }
 
-  const handleAddSelected = async (candidates: FrameTestCandidate[], timeMs: number) => {
+  // Toggle an OCR box in/out (they start unchecked; this selects/deselects)
+  const handleToggleOcr = (idx: number) => {
     if (committed || committing) return
-    const toAdd = candidates.filter((_, i) => !excluded.has(i))
-    if (toAdd.length === 0) return
+    setSelectedOcr((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  const handleAddSelected = async (res: FrameTestResult) => {
+    if (committed || committing) return
+
+    const piiToAdd = res.presidio.candidates.filter((_, i) => !excluded.has(i))
+    const ocrToAdd = res.ocr.boxes.filter((_, i) => selectedOcr.has(i))
+    if (piiToAdd.length === 0 && ocrToAdd.length === 0) return
+
     setCommitting(true)
     try {
-      for (const c of toAdd) {
+      // Add PII candidates (auto-classified)
+      for (const c of piiToAdd) {
         const [x, y, w, h] = c.bbox
         const event: RedactionEvent = {
           event_id: crypto.randomUUID(),
@@ -110,8 +129,26 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
           pii_type: c.pii_type,
           confidence: c.confidence,
           extracted_text: c.text,
-          time_ranges: [{ start_ms: timeMs, end_ms: timeMs }],
-          keyframes: [{ time_ms: timeMs, bbox: { x, y, w, h } }],
+          time_ranges: [{ start_ms: res.time_ms, end_ms: res.time_ms }],
+          keyframes: [{ time_ms: res.time_ms, bbox: { x, y, w, h } }],
+          tracking_method: 'none',
+          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          status: 'accepted',
+        }
+        const saved = await addEventToProject(projectId, event)
+        addEvent(saved)
+      }
+      // Add manually selected OCR boxes (no PII classification — type is 'manual')
+      for (const box of ocrToAdd) {
+        const [x, y, w, h] = box.bbox
+        const event: RedactionEvent = {
+          event_id: crypto.randomUUID(),
+          source: 'auto',
+          pii_type: 'manual',
+          confidence: box.confidence,
+          extracted_text: box.text,
+          time_ranges: [{ start_ms: res.time_ms, end_ms: res.time_ms }],
+          keyframes: [{ time_ms: res.time_ms, bbox: { x, y, w, h } }],
           tracking_method: 'none',
           redaction_style: { type: 'blur', strength: 15, color: '#000000' },
           status: 'accepted',
@@ -263,21 +300,41 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                     No text detected. Try a different frame or check the backend logs for EasyOCR errors.
                   </EmptyNote>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {result.ocr.boxes.map((box, i) => (
-                      <div key={i} style={{
-                        display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '6px 10px', background: 'var(--surface)',
-                        borderRadius: 4, fontSize: 13,
-                      }}>
-                        <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{box.text}</span>
-                        <ConfBadge value={box.confidence} />
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                          {box.bbox[0]},{box.bbox[1]} {box.bbox[2]}×{box.bbox[3]}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                      Check any text the auto-scan might miss to manually add it to the censor list.
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {result.ocr.boxes.map((box, i) => {
+                        const isChecked = selectedOcr.has(i)
+                        const isLocked = committed || committing
+                        return (
+                          <div key={i} style={{
+                            display: 'flex', alignItems: 'center', gap: 10,
+                            padding: '6px 10px', background: 'var(--surface)',
+                            borderRadius: 4, fontSize: 13,
+                            borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
+                            opacity: isChecked ? 1 : 0.7,
+                            transition: 'opacity 0.15s',
+                          }}>
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              disabled={isLocked}
+                              onChange={() => handleToggleOcr(i)}
+                              title={isChecked ? 'Uncheck to exclude' : 'Check to add to censor list'}
+                              style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
+                            />
+                            <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{box.text}</span>
+                            <ConfBadge value={box.confidence} />
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                              {box.bbox[2]}×{box.bbox[3]}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
                 )}
               </Section>
 
@@ -322,70 +379,47 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                       <EmptyNote>
                         All {result.presidio.raw_count} Presidio results were filtered out. See "Filtered" below.
                       </EmptyNote>
-                    ) : (() => {
-                      const checkedCount = result.presidio.candidates.length - excluded.size
-                      return (
-                        <>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-                            All findings are selected by default. Uncheck any false positives before adding.
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
-                            {result.presidio.candidates.map((c, i) => {
-                              const isChecked = !excluded.has(i)
-                              const isLocked = committed || committing
-                              return (
-                                <div key={i} style={{
-                                  display: 'flex', alignItems: 'center', gap: 10,
-                                  padding: '6px 10px', background: 'var(--surface)',
-                                  borderRadius: 4, fontSize: 13,
-                                  borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
-                                  opacity: isChecked ? 1 : 0.45,
-                                  transition: 'opacity 0.15s',
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                          All findings are selected by default. Uncheck any false positives before adding.
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {result.presidio.candidates.map((c, i) => {
+                            const isChecked = !excluded.has(i)
+                            const isLocked = committed || committing
+                            return (
+                              <div key={i} style={{
+                                display: 'flex', alignItems: 'center', gap: 10,
+                                padding: '6px 10px', background: 'var(--surface)',
+                                borderRadius: 4, fontSize: 13,
+                                borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
+                                opacity: isChecked ? 1 : 0.45,
+                                transition: 'opacity 0.15s',
+                              }}>
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  disabled={isLocked}
+                                  onChange={() => handleTogglePii(i)}
+                                  title={isChecked ? 'Uncheck to exclude from censor list' : 'Check to include'}
+                                  style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
+                                />
+                                <span style={{
+                                  fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                                  color: PII_COLORS[c.pii_type] ?? 'var(--text-muted)',
+                                  textTransform: 'uppercase', whiteSpace: 'nowrap',
                                 }}>
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    disabled={isLocked}
-                                    onChange={() => handleToggle(i)}
-                                    title={isChecked ? 'Uncheck to exclude from censor list' : 'Check to include'}
-                                    style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
-                                  />
-                                  <span style={{
-                                    fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
-                                    color: PII_COLORS[c.pii_type] ?? 'var(--text-muted)',
-                                    textTransform: 'uppercase', whiteSpace: 'nowrap',
-                                  }}>
-                                    {c.pii_type}
-                                  </span>
-                                  <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{c.text}</span>
-                                  <ConfBadge value={c.confidence} />
-                                </div>
-                              )
-                            })}
-                          </div>
-
-                          {/* Add selected button */}
-                          {committed ? (
-                            <div style={{ fontSize: 12, color: 'var(--accept)', fontWeight: 600 }}>
-                              ✓ Added to censor list
-                            </div>
-                          ) : (
-                            <button
-                              className="primary"
-                              onClick={() => handleAddSelected(result.presidio.candidates, result.time_ms)}
-                              disabled={committing || checkedCount === 0}
-                              style={{ width: '100%', fontSize: 13 }}
-                            >
-                              {committing
-                                ? 'Adding…'
-                                : checkedCount === 0
-                                ? 'No findings selected'
-                                : `Add ${checkedCount} finding${checkedCount !== 1 ? 's' : ''} to Censor List`}
-                            </button>
-                          )}
-                        </>
-                      )
-                    })()}
+                                  {c.pii_type}
+                                </span>
+                                <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{c.text}</span>
+                                <ConfBadge value={c.confidence} />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </>
+                    )}
 
                     {/* Filtered results (collapsible) */}
                     {result.presidio.filtered_count > 0 && (
@@ -394,6 +428,38 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                   </>
                 )}
               </Section>
+
+              {/* Unified "Add to Censor List" button — covers both PII candidates and OCR boxes */}
+              {(() => {
+                const piiCount = result.presidio.candidates.length - excluded.size
+                const ocrCount = selectedOcr.size
+                const total = piiCount + ocrCount
+                return (
+                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                    {committed ? (
+                      <div style={{ fontSize: 13, color: 'var(--accept)', fontWeight: 600, textAlign: 'center' }}>
+                        ✓ Added to censor list
+                      </div>
+                    ) : (
+                      <button
+                        className="primary"
+                        onClick={() => handleAddSelected(result)}
+                        disabled={committing || total === 0}
+                        style={{ width: '100%', fontSize: 13 }}
+                      >
+                        {committing
+                          ? 'Adding…'
+                          : total === 0
+                          ? 'No items selected'
+                          : `Add ${total} item${total !== 1 ? 's' : ''} to Censor List`
+                            + (piiCount > 0 && ocrCount > 0
+                              ? ` (${piiCount} PII + ${ocrCount} OCR)`
+                              : '')}
+                      </button>
+                    )}
+                  </div>
+                )
+              })()}
             </>
           )}
         </div>
