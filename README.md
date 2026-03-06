@@ -1,8 +1,8 @@
 # Censor Me
 
-Local, GPU-accelerated video PII redaction. Automatically detects and blurs sensitive information in screen recordings and video — phones, emails, SSNs, credit cards, and more — without sending any content off your machine.
+Local, GPU-accelerated video PII redaction. Automatically detects and blurs sensitive information in screen recordings and video — phones, emails, SSNs, credit cards, employee IDs, and more — without sending any content off your machine.
 
-![Status](https://img.shields.io/badge/status-v0.1_MVP-blue)
+![Status](https://img.shields.io/badge/status-v0.2-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 
@@ -11,27 +11,45 @@ Local, GPU-accelerated video PII redaction. Automatically detects and blurs sens
 ## What It Does
 
 1. **Import** a video (MP4, MOV, MKV, AVI, WebM)
-2. **Scan** — OCR + PII detection runs on every sampled frame using your GPU
-3. **Review** findings in the panel — accept or reject each one (keyboard: `A` / `R`)
-4. **Export** a redacted H.264 video with all accepted regions blurred out
+2. **Test Frame** — run OCR + PII detection on a single frame to verify detection before a full scan; results appear as a cyan overlay on the live video
+3. **Scan** — full OCR + PII detection runs on every sampled frame using your GPU
+4. **Review** findings in the panel — accept or reject each one (keyboard: `A` / `R`); click any box on the video to select it; resize boxes with drag handles
+5. **Draw** custom redaction boxes directly on the video; they auto-track the content forward
+6. **Export** a redacted H.264 video with all accepted regions blurred out
 
 All processing is local. No cloud, no API calls, no data leaves your machine.
 
 ---
 
-## Features (v0.1)
+## Features
 
-- GPU-accelerated OCR via EasyOCR (CUDA auto-detected)
-- PII detection: phone numbers, email addresses, SSNs, credit card numbers
-- NLP-based person/address detection via Microsoft Presidio + spaCy
+### Detection
+- GPU-accelerated OCR via EasyOCR (CUDA auto-detected, CPU fallback)
+- PII detection: phone numbers, email addresses, SSNs, credit card numbers, **employee IDs (6-digit)**
+- NLP-based person name detection via Microsoft Presidio + spaCy
+- Smart filtering: DATE_TIME, LOCATION, and URL entities excluded (too noisy for UI/intranet text)
+- Default confidence threshold 0.35 (tuned for screen recordings)
 - CSRT object tracking between sampled frames
-- Blur redaction style
+
+### UI
+- **Video controls bar** — play/pause, time display, volume, playback speed (0.25×–2×)
+- **Zoom** — 1×–4× video zoom with `+`/`−` controls; overlay stays aligned
+- **Test Frame modal** — OCR + Presidio results for a single frame; cyan overlay on live video shows detected regions; checkboxes to add individual findings to the censor list
+- **Draw Box** — click-drag to draw a manual redaction rectangle on the video; CSRT tracking follows the content forward automatically
+- **Resize handles** — select any finding, drag the 8 corner/edge handles to resize its bounding box; persisted to disk immediately
+- **Click-to-select** — click any visible box on the video to select it in the Inspector
+- Immediate "Starting…" feedback when scan is clicked (no gap waiting for WebSocket)
+- Real-time scan progress bar over WebSocket
 - Three-pane UI: Findings Panel · Video Preview · Inspector
-- Real-time scan progress over WebSocket
 - HTTP range request support for smooth video seeking
 - Save/load projects as local JSON
 - NVENC hardware export (falls back to libx264 automatically)
 - Audit report generation (JSON + HTML)
+
+### Rules
+- Built-in regex rules: US phone, email, SSN, credit card, 6-digit employee ID
+- Custom regex rules via `/rules` API (UI in roadmap)
+- Rules applied during both full scans and the test-frame diagnostic
 
 ---
 
@@ -47,6 +65,7 @@ All processing is local. No cloud, no API calls, no data leaves your machine.
 | Python | 3.11+ |
 | Node.js | 20+ |
 | ffmpeg | Must be on PATH |
+| opencv-contrib-python | Required (not bare opencv-python) — needed for CSRT tracker |
 
 ---
 
@@ -79,7 +98,7 @@ VIRTUAL_ENV=".venv" uv pip install pip
 cd frontend && pnpm install && cd ..
 ```
 
-> On first scan, EasyOCR downloads its models (~100 MB) and Presidio downloads `en_core_web_sm`. This only happens once.
+> On first scan, EasyOCR downloads its models (~100 MB) and Presidio initializes the spaCy NER model. This only happens once per machine.
 
 ### 3. Configure
 
@@ -98,7 +117,7 @@ cp .env.example .env
 start_all.bat
 ```
 
-This opens the backend and frontend in separate windows and launches your browser.
+This polls the backend until it responds, then opens the frontend and browser automatically.
 
 **Option B — Manual:**
 
@@ -116,6 +135,48 @@ Backend API docs: **http://localhost:8010/docs**
 
 ---
 
+## Keyboard Shortcuts
+
+| Key | Action |
+|---|---|
+| `Space` | Play / Pause |
+| `J` | Step back 5 seconds |
+| `K` | Pause |
+| `L` | Step forward 5 seconds |
+| `A` | Accept selected finding |
+| `R` | Reject selected finding |
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/system/status` | Backend readiness + GPU info |
+| `GET` | `/projects/` | List all projects |
+| `POST` | `/projects/` | Create new project |
+| `GET` | `/projects/{id}` | Load project |
+| `DELETE` | `/projects/{id}` | Delete project |
+| `POST` | `/projects/{id}/events` | Add a single RedactionEvent |
+| `PATCH` | `/projects/{id}/events/{eid}/keyframes` | Update event keyframes (resize) |
+| `PATCH` | `/projects/{id}/events/{eid}/status` | Accept / reject event |
+| `POST` | `/video/import/{id}` | Import video + generate proxy |
+| `GET` | `/video/proxy/{id}` | Stream proxy video |
+| `POST` | `/scan/start/{id}` | Start full scan |
+| `WS` | `/scan/progress/{scan_id}` | Real-time scan progress |
+| `GET` | `/scan/status/{scan_id}` | Poll scan status |
+| `GET` | `/scan/test-frame/{id}` | Single-frame OCR + PII diagnostic |
+| `POST` | `/scan/track-event/{id}/{eid}` | CSRT-track a manual box forward |
+| `POST` | `/export/{id}` | Start export |
+| `WS` | `/export/progress/{export_id}` | Real-time export progress |
+| `GET` | `/export/{id}/download` | Download exported video |
+| `GET` | `/rules/` | List all rules |
+| `POST` | `/rules/custom` | Add custom regex rule |
+| `DELETE` | `/rules/custom/{rule_id}` | Delete custom rule |
+| `POST` | `/rules/test` | Test a regex pattern against sample text |
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -126,7 +187,7 @@ Backend API docs: **http://localhost:8010/docs**
 | OCR | EasyOCR (PyTorch) |
 | PII Detection | Microsoft Presidio + spaCy |
 | Video I/O | ffmpeg-python + OpenCV |
-| Tracking | OpenCV CSRT |
+| Tracking | OpenCV CSRT (`cv2.legacy.TrackerCSRT_create`) |
 | Python packaging | uv |
 | Node packaging | pnpm |
 
@@ -139,17 +200,35 @@ Censor_me/
 ├── backend/
 │   ├── main.py              # FastAPI entry point
 │   ├── api/                 # REST + WebSocket endpoints
+│   │   ├── projects.py      # Project CRUD + event management
+│   │   ├── scan.py          # Scan pipeline + test-frame + manual tracking
+│   │   ├── video.py         # Import + proxy serving
+│   │   ├── export.py        # Redacted video export
+│   │   ├── rules.py         # PII detection rules
+│   │   └── system.py        # Hardware status
 │   ├── services/            # OCR, PII, tracking, rendering, export
+│   │   ├── ocr_service.py       # EasyOCR wrapper (lazy singleton)
+│   │   ├── pii_classifier.py    # Presidio + custom regex rules
+│   │   ├── scan_orchestrator.py # 7-stage pipeline coordinator
+│   │   ├── tracker_service.py   # CSRT tracking + manual box tracking
+│   │   └── ...
 │   ├── models/              # Pydantic data models
 │   └── utils/               # GPU detection, startup, scene detection
 ├── frontend/
 │   └── src/
-│       ├── components/      # FindingsPanel, VideoPreview, Inspector
+│       ├── components/
+│       │   ├── VideoPreview/
+│       │   │   ├── VideoPreview.tsx    # Player, controls, zoom, toolbar
+│       │   │   ├── OverlayCanvas.tsx   # Interactive canvas (draw, resize, overlay)
+│       │   │   ├── FrameTestModal.tsx  # Single-frame diagnostic modal
+│       │   │   └── Timeline.tsx        # Scrubber with event markers
+│       │   ├── FindingsPanel/          # Event list with accept/reject
+│       │   └── Inspector/              # Event detail + export controls
 │       ├── hooks/           # useScanProgress, useExportProgress, useKeyboard
 │       ├── store/           # Zustand project state
 │       ├── api/             # Typed API client
 │       └── types/           # Shared TypeScript types
-├── start_all.bat            # Launch everything
+├── start_all.bat            # Launch everything (polls backend before opening browser)
 ├── start_backend.bat
 ├── start_frontend.bat
 ├── pyproject.toml
@@ -160,8 +239,8 @@ Censor_me/
 
 ## Roadmap
 
-- **v0.2** — Polygon draw tool, solid/pixelate redaction styles, custom regex rules UI, batch mode
-- **v0.3** — SAM2 segmentation tracking, scene-change detection
+- **v0.3** — Polygon draw tool, solid/pixelate redaction styles, custom rules UI, batch mode
+- **v0.4** — SAM2 segmentation tracking, scene-change detection
 - **v1.0** — Packaged installer, macOS support, audio PII redaction
 
 ---

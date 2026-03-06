@@ -1,5 +1,6 @@
 @echo off
-title Censor Me — Frontend
+chcp 65001 > nul
+title Censor Me - Frontend
 setlocal
 
 set "ROOT=%~dp0"
@@ -14,7 +15,7 @@ if not exist "node_modules\.bin\vite.CMD" (
     exit /b 1
 )
 
-echo Censor Me — Frontend
+echo Censor Me - Frontend
 echo URL: http://localhost:5173
 echo.
 

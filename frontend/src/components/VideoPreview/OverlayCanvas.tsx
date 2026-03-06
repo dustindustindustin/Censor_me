@@ -1,49 +1,160 @@
 /**
- * OverlayCanvas — draws redaction region previews on top of the video element.
+ * OverlayCanvas — interactive canvas overlay on the video element.
  *
- * Rendered as a transparent canvas absolutely positioned over the <video> tag.
- * Redraws every time the playhead position changes (via ``currentTimeMs`` prop).
+ * Responsibilities:
+ * 1. Draw redaction region previews for all active events (colour-coded by status)
+ * 2. Draw test-frame result boxes in cyan when a frame test is active
+ * 3. Draw resize handles on the selected event; allow drag-to-resize
+ * 4. Allow click-drag box drawing in draw mode; create a new manual RedactionEvent
  *
- * For each active RedactionEvent at the current time:
- * 1. Interpolates the bounding box between the nearest keyframes.
- * 2. Scales it from video native pixels to the rendered video element's size.
- * 3. Draws a semi-transparent fill + border color-coded by event status:
- *    - Selected: blue (#5b7cf6)
- *    - Pending:  orange (#f0a050) with a dashed border
- *    - Accepted: green (#3dca7e)
- *
- * This gives the user a real-time preview of where redactions will be applied
- * before they export the video.
+ * Coordinate spaces:
+ * - RedactionEvent keyframe bboxes are stored in **source video** pixel space.
+ * - The <video> element plays the proxy, so video.videoWidth is the proxy width.
+ * - We correct for source→proxy scaling via sourceWidth/sourceHeight props.
+ * - All screen rendering: multiply by scaleX/scaleY (proxy → screen).
  */
 
 import { useEffect, useRef } from 'react'
+import { addEventToProject, trackManualEvent, updateEventKeyframes } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import type { BoundingBox, Keyframe, RedactionEvent } from '../../types'
 
-/** Props for the OverlayCanvas component. */
 interface Props {
-  /** Ref to the <video> element; used to read its rendered dimensions and native video size. */
   videoRef: React.RefObject<HTMLVideoElement>
-  /** Ref to the container div; used to compute the canvas position offset. */
   containerRef: React.RefObject<HTMLDivElement>
-  /** Current playhead position in milliseconds (updated on video timeupdate events). */
   currentTimeMs: number
-  /** Whether the redaction overlay is visible (controlled by the toolbar toggle). */
   showRedactions: boolean
+  projectId: string
+  sourceWidth: number   // native source video width (for coordinate correction)
+  sourceHeight: number  // native source video height
 }
 
-/**
- * Transparent canvas overlay that previews redaction regions on the video.
- *
- * The canvas covers the entire container and is updated via a useEffect that
- * runs whenever the playhead time, events list, or visibility toggle changes.
- */
-export function OverlayCanvas({ videoRef, containerRef, currentTimeMs, showRedactions }: Props) {
+// Handle size in screen pixels
+const HANDLE_SIZE = 8
+const HANDLE_HIT = 12  // generous hit target
+
+type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+
+function getHandlePoints(rx: number, ry: number, rw: number, rh: number): Record<HandleId, [number, number]> {
+  return {
+    nw: [rx,           ry],
+    n:  [rx + rw / 2,  ry],
+    ne: [rx + rw,      ry],
+    e:  [rx + rw,      ry + rh / 2],
+    se: [rx + rw,      ry + rh],
+    s:  [rx + rw / 2,  ry + rh],
+    sw: [rx,           ry + rh],
+    w:  [rx,           ry + rh / 2],
+  }
+}
+
+function hitHandle(mx: number, my: number, points: Record<HandleId, [number, number]>): HandleId | null {
+  for (const [id, [hx, hy]] of Object.entries(points) as [HandleId, [number, number]][]) {
+    if (Math.abs(mx - hx) <= HANDLE_HIT / 2 && Math.abs(my - hy) <= HANDLE_HIT / 2) return id
+  }
+  return null
+}
+
+function applyHandleDrag(
+  orig: BoundingBox,
+  handle: HandleId,
+  dx: number, dy: number,
+): BoundingBox {
+  let { x, y, w, h } = orig
+  if (handle.includes('w')) { x += dx; w -= dx }
+  if (handle.includes('e')) { w += dx }
+  if (handle.includes('n')) { y += dy; h -= dy }
+  if (handle.includes('s')) { h += dy }
+  // Prevent inversion
+  if (w < 10) w = 10
+  if (h < 10) h = 10
+  return { x, y, w, h }
+}
+
+export function OverlayCanvas({
+  videoRef,
+  containerRef,
+  currentTimeMs,
+  showRedactions,
+  projectId,
+  sourceWidth,
+  sourceHeight,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { events, selectedEventId } = useProjectStore((s) => ({
+
+  const {
+    events,
+    selectedEventId,
+    selectEvent,
+    addEvent,
+    updateEvent,
+    testFrameOverlay,
+    drawingMode,
+    setDrawingMode,
+  } = useProjectStore((s) => ({
     events: s.events,
     selectedEventId: s.selectedEventId,
+    selectEvent: s.selectEvent,
+    addEvent: s.addEvent,
+    updateEvent: s.updateEvent,
+    testFrameOverlay: s.testFrameOverlay,
+    drawingMode: s.drawingMode,
+    setDrawingMode: s.setDrawingMode,
   }))
+
+  // Mouse interaction state (refs to avoid triggering re-renders on every frame)
+  const drawStart = useRef<{ nx: number; ny: number } | null>(null)
+  const drawCurrent = useRef<{ nx: number; ny: number } | null>(null)
+  const resizeState = useRef<{
+    handle: HandleId
+    event: RedactionEvent
+    origBbox: BoundingBox
+    startScreen: { x: number; y: number }
+  } | null>(null)
+
+  // ── Scale helpers ──────────────────────────────────────────────────────────
+
+  function getScales() {
+    const video = videoRef.current
+    const container = containerRef.current
+    if (!video || !container || video.videoWidth === 0) return null
+
+    const videoRect = video.getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
+
+    // proxy → screen
+    const scaleX = videoRect.width / video.videoWidth
+    const scaleY = videoRect.height / video.videoHeight
+
+    // source → proxy (correct for source resolution stored in keyframes)
+    const srcToProxyX = sourceWidth > 0 ? video.videoWidth / sourceWidth : 1
+    const srcToProxyY = sourceHeight > 0 ? video.videoHeight / sourceHeight : 1
+
+    const offsetX = videoRect.left - containerRect.left
+    const offsetY = videoRect.top - containerRect.top
+
+    return { scaleX, scaleY, srcToProxyX, srcToProxyY, offsetX, offsetY, videoRect }
+  }
+
+  /** Convert source-pixel bbox to screen rect */
+  function srcBboxToScreen(bbox: BoundingBox, s: NonNullable<ReturnType<typeof getScales>>) {
+    return {
+      rx: s.offsetX + bbox.x * s.srcToProxyX * s.scaleX,
+      ry: s.offsetY + bbox.y * s.srcToProxyY * s.scaleY,
+      rw: bbox.w * s.srcToProxyX * s.scaleX,
+      rh: bbox.h * s.srcToProxyY * s.scaleY,
+    }
+  }
+
+  /** Convert screen coords to source pixel coords */
+  function screenToSrc(sx: number, sy: number, s: NonNullable<ReturnType<typeof getScales>>) {
+    return {
+      nx: (sx - s.offsetX) / s.scaleX / s.srcToProxyX,
+      ny: (sy - s.offsetY) / s.scaleY / s.srcToProxyY,
+    }
+  }
+
+  // ── Draw loop ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -54,80 +165,292 @@ export function OverlayCanvas({ videoRef, containerRef, currentTimeMs, showRedac
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    // Size the canvas to the full container (not just the video area)
-    // so the absolute positioning origin is the container's top-left corner.
-    const videoRect = video.getBoundingClientRect()
+    const s = getScales()
     const containerRect = container.getBoundingClientRect()
-
-    // Offset of the video element's top-left corner within the container
-    const offsetX = videoRect.left - containerRect.left
-    const offsetY = videoRect.top - containerRect.top
-
     canvas.width = containerRect.width
     canvas.height = containerRect.height
-
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    // Nothing to draw if overlay is hidden or video has no intrinsic size yet
-    if (!showRedactions || video.videoWidth === 0) return
+    if (!s || video.videoWidth === 0) return
 
-    // Scale factors: convert native video pixel coordinates to rendered screen pixels.
-    // The video may be letterboxed/pillarboxed, so we must use the rendered dimensions.
-    const scaleX = videoRect.width / video.videoWidth
-    const scaleY = videoRect.height / video.videoHeight
+    // ── Redaction event boxes ──
+    if (showRedactions) {
+      const activeEvents = events.filter((event) => {
+        if (event.status === 'rejected') return false
+        return event.time_ranges.some(
+          (r) => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms
+        )
+      })
 
-    // Only draw events that are active at the current playhead position
-    const activeEvents = events.filter((event) => {
-      if (event.status === 'rejected') return false  // Rejected events are not drawn
-      return event.time_ranges.some(
-        (r) => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms
-      )
-    })
+      for (const event of activeEvents) {
+        const bbox = interpolateBbox(event, currentTimeMs)
+        if (!bbox) continue
 
-    for (const event of activeEvents) {
-      // Interpolate the bbox between the two nearest keyframes
+        const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+        const isSelected = event.event_id === selectedEventId
+        const isPending = event.status === 'pending'
+
+        ctx.fillStyle = isSelected
+          ? 'rgba(91, 124, 246, 0.25)'
+          : isPending
+          ? 'rgba(240, 160, 80, 0.2)'
+          : 'rgba(61, 202, 126, 0.2)'
+        ctx.fillRect(rx, ry, rw, rh)
+
+        ctx.strokeStyle = isSelected ? '#5b7cf6' : isPending ? '#f0a050' : '#3dca7e'
+        ctx.lineWidth = isSelected ? 2 : 1
+        ctx.setLineDash(isPending ? [4, 2] : [])
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.setLineDash([])
+
+        ctx.font = '10px system-ui'
+        ctx.fillStyle = ctx.strokeStyle
+        ctx.fillText(event.pii_type.toUpperCase(), rx + 3, ry - 3)
+
+        // Resize handles for the selected event
+        if (isSelected) {
+          const handles = getHandlePoints(rx, ry, rw, rh)
+          ctx.fillStyle = '#5b7cf6'
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 1
+          for (const [hx, hy] of Object.values(handles)) {
+            ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+            ctx.strokeRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+          }
+        }
+      }
+    }
+
+    // ── Test frame overlay (cyan) ──
+    if (testFrameOverlay) {
+      for (const box of testFrameOverlay) {
+        const [bx, by, bw, bh] = box.bbox
+        const { rx, ry, rw, rh } = srcBboxToScreen({ x: bx, y: by, w: bw, h: bh }, s)
+        ctx.fillStyle = 'rgba(0, 220, 255, 0.18)'
+        ctx.fillRect(rx, ry, rw, rh)
+        ctx.strokeStyle = '#00dcff'
+        ctx.lineWidth = 2
+        ctx.setLineDash([])
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.font = '10px system-ui'
+        ctx.fillStyle = '#00dcff'
+        ctx.fillText(box.pii_type.toUpperCase(), rx + 3, ry - 3)
+      }
+    }
+
+    // ── Live draw rect ──
+    if (drawingMode && drawStart.current && drawCurrent.current) {
+      const x = Math.min(drawStart.current.nx, drawCurrent.current.nx)
+      const y = Math.min(drawStart.current.ny, drawCurrent.current.ny)
+      const w = Math.abs(drawCurrent.current.nx - drawStart.current.nx)
+      const h = Math.abs(drawCurrent.current.ny - drawStart.current.ny)
+      if (w > 4 && h > 4) {
+        const { rx, ry, rw, rh } = srcBboxToScreen({ x, y, w, h }, s)
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 2
+        ctx.setLineDash([6, 3])
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.setLineDash([])
+        ctx.fillStyle = 'rgba(255,255,255,0.08)'
+        ctx.fillRect(rx, ry, rw, rh)
+      }
+    }
+  }, [currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, drawingMode])
+
+  // ── Mouse event handlers ───────────────────────────────────────────────────
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const s = getScales()
+    if (!s) return
+    const canvas = canvasRef.current!
+    const canvasRect = canvas.getBoundingClientRect()
+    const mx = e.clientX - canvasRect.left
+    const my = e.clientY - canvasRect.top
+
+    // Priority 1: check resize handles on selected event
+    if (selectedEventId) {
+      const selEvent = events.find((ev) => ev.event_id === selectedEventId)
+      if (selEvent) {
+        const bbox = interpolateBbox(selEvent, currentTimeMs)
+        if (bbox) {
+          const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+          const handles = getHandlePoints(rx, ry, rw, rh)
+          const hit = hitHandle(mx, my, handles)
+          if (hit) {
+            resizeState.current = {
+              handle: hit,
+              event: selEvent,
+              origBbox: { ...bbox },
+              startScreen: { x: mx, y: my },
+            }
+            return
+          }
+        }
+      }
+    }
+
+    // Priority 2: click inside an active event box to select it
+    for (const event of [...events].reverse()) {
+      if (event.status === 'rejected') continue
+      const active = event.time_ranges.some(r => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms)
+      if (!active) continue
       const bbox = interpolateBbox(event, currentTimeMs)
       if (!bbox) continue
-
-      // Transform from native video coordinates to screen coordinates
-      const rx = offsetX + bbox.x * scaleX
-      const ry = offsetY + bbox.y * scaleY
-      const rw = bbox.w * scaleX
-      const rh = bbox.h * scaleY
-
-      const isSelected = event.event_id === selectedEventId
-      const isPending = event.status === 'pending'
-
-      // Fill color: blue for selected, orange for pending, green for accepted
-      ctx.fillStyle = isSelected
-        ? 'rgba(91, 124, 246, 0.25)'
-        : isPending
-        ? 'rgba(240, 160, 80, 0.2)'
-        : 'rgba(61, 202, 126, 0.2)'
-      ctx.fillRect(rx, ry, rw, rh)
-
-      // Border: solid for selected/accepted, dashed for pending (not yet confirmed)
-      ctx.strokeStyle = isSelected ? '#5b7cf6' : isPending ? '#f0a050' : '#3dca7e'
-      ctx.lineWidth = isSelected ? 2 : 1
-      ctx.setLineDash(isPending ? [4, 2] : [])
-      ctx.strokeRect(rx, ry, rw, rh)
-      ctx.setLineDash([])  // Reset dash pattern for next shape
-
-      // Small label above the box showing the PII type
-      const label = event.pii_type.toUpperCase()
-      ctx.font = '10px system-ui'
-      ctx.fillStyle = ctx.strokeStyle
-      ctx.fillText(label, rx + 3, ry - 3)
+      const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+      if (mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh) {
+        selectEvent(event.event_id)
+        return
+      }
     }
-  }, [currentTimeMs, events, selectedEventId, showRedactions])
+
+    // Priority 3: draw mode
+    if (drawingMode) {
+      const { nx, ny } = screenToSrc(mx, my, s)
+      drawStart.current = { nx, ny }
+      drawCurrent.current = { nx, ny }
+    }
+  }
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const s = getScales()
+    if (!s) return
+    const canvas = canvasRef.current!
+    const canvasRect = canvas.getBoundingClientRect()
+    const mx = e.clientX - canvasRect.left
+    const my = e.clientY - canvasRect.top
+
+    if (drawingMode && drawStart.current) {
+      const { nx, ny } = screenToSrc(mx, my, s)
+      drawCurrent.current = { nx, ny }
+      // Draw the live drag rect directly on the canvas
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        const containerRect = containerRef.current!.getBoundingClientRect()
+        ctx.clearRect(0, 0, containerRect.width, containerRect.height)
+        const x = Math.min(drawStart.current.nx, nx)
+        const y = Math.min(drawStart.current.ny, ny)
+        const w = Math.abs(nx - drawStart.current.nx)
+        const h = Math.abs(ny - drawStart.current.ny)
+        if (w > 4 && h > 4) {
+          const { rx, ry, rw, rh } = srcBboxToScreen({ x, y, w, h }, s)
+          ctx.strokeStyle = '#fff'
+          ctx.lineWidth = 2
+          ctx.setLineDash([6, 3])
+          ctx.strokeRect(rx, ry, rw, rh)
+          ctx.setLineDash([])
+          ctx.fillStyle = 'rgba(255,255,255,0.08)'
+          ctx.fillRect(rx, ry, rw, rh)
+        }
+      }
+    }
+  }
+
+  const handleMouseUp = async (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const s = getScales()
+    if (!s) return
+    const canvas = canvasRef.current!
+    const canvasRect = canvas.getBoundingClientRect()
+    const mx = e.clientX - canvasRect.left
+    const my = e.clientY - canvasRect.top
+
+    // Finish resize
+    if (resizeState.current) {
+      const { handle, event, origBbox, startScreen } = resizeState.current
+      resizeState.current = null
+
+      const dxScreen = mx - startScreen.x
+      const dyScreen = my - startScreen.y
+      const dxSrc = dxScreen / s.scaleX / s.srcToProxyX
+      const dySrc = dyScreen / s.scaleY / s.srcToProxyY
+
+      const newBbox = applyHandleDrag(origBbox, handle, dxSrc, dySrc)
+
+      // Find nearest keyframe and update it
+      const kfs = event.keyframes
+      let nearest = kfs[0]
+      let minDiff = Infinity
+      for (const kf of kfs) {
+        const diff = Math.abs(kf.time_ms - currentTimeMs)
+        if (diff < minDiff) { minDiff = diff; nearest = kf }
+      }
+
+      let updatedKfs: Keyframe[]
+      if (nearest && nearest.time_ms === currentTimeMs) {
+        updatedKfs = kfs.map((kf) =>
+          kf.time_ms === currentTimeMs ? { ...kf, bbox: newBbox } : kf
+        )
+      } else {
+        // Insert new keyframe at current time with resized bbox
+        const newKf: Keyframe = { time_ms: currentTimeMs, bbox: newBbox }
+        updatedKfs = [...kfs, newKf].sort((a, b) => a.time_ms - b.time_ms)
+      }
+
+      const updated = { ...event, keyframes: updatedKfs }
+      updateEvent(updated)
+      try {
+        await updateEventKeyframes(projectId, event.event_id, updatedKfs)
+      } catch (err) {
+        console.error('Failed to save resized keyframe:', err)
+      }
+      return
+    }
+
+    // Finish draw
+    if (drawingMode && drawStart.current && drawCurrent.current) {
+      const x = Math.min(drawStart.current.nx, drawCurrent.current.nx)
+      const y = Math.min(drawStart.current.ny, drawCurrent.current.ny)
+      const w = Math.abs(drawCurrent.current.nx - drawStart.current.nx)
+      const h = Math.abs(drawCurrent.current.ny - drawStart.current.ny)
+
+      drawStart.current = null
+      drawCurrent.current = null
+
+      if (w >= 10 && h >= 10) {
+        const newEvent: RedactionEvent = {
+          event_id: crypto.randomUUID(),
+          source: 'auto',
+          pii_type: 'manual',
+          confidence: 1.0,
+          extracted_text: null,
+          time_ranges: [{ start_ms: currentTimeMs, end_ms: currentTimeMs }],
+          keyframes: [{ time_ms: currentTimeMs, bbox: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) } }],
+          tracking_method: 'none',
+          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          status: 'accepted',
+        }
+
+        try {
+          const saved = await addEventToProject(projectId, newEvent)
+          addEvent(saved)
+          setDrawingMode(false)
+
+          // Run CSRT tracking forward from the drawn keyframe
+          try {
+            const tracked = await trackManualEvent(projectId, saved.event_id)
+            updateEvent(tracked)
+          } catch (err) {
+            console.warn('Tracking failed for manual box (single-frame redaction kept):', err)
+          }
+        } catch (err) {
+          console.error('Failed to save manual box:', err)
+        }
+      }
+    }
+  }
+
+  const needsPointerEvents = drawingMode || selectedEventId !== null
 
   return (
     <canvas
       ref={canvasRef}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
       style={{
         position: 'absolute',
-        pointerEvents: 'none',  // Let mouse events pass through to the video element
+        pointerEvents: needsPointerEvents ? 'auto' : 'none',
         zIndex: 5,
+        cursor: drawingMode ? 'crosshair' : resizeState.current ? 'nwse-resize' : 'default',
       }}
     />
   )
@@ -135,42 +458,27 @@ export function OverlayCanvas({ videoRef, containerRef, currentTimeMs, showRedac
 
 /**
  * Linearly interpolate a bounding box at a given time using keyframe data.
- *
- * Finds the keyframes immediately before and after ``timeMs``, then linearly
- * interpolates between their bounding boxes. Returns the nearest keyframe's
- * bbox when no bracketing pair is found (clamps to first/last keyframe).
- *
- * @param event   - The RedactionEvent whose keyframes to interpolate.
- * @param timeMs  - The playhead time in milliseconds.
- * @returns Interpolated ``BoundingBox`` or null if no keyframes exist.
  */
 function interpolateBbox(event: RedactionEvent, timeMs: number): BoundingBox | null {
   const kfs = event.keyframes
   if (!kfs || kfs.length === 0) return null
-
-  // Single keyframe — no interpolation possible, use it directly
   if (kfs.length === 1) return kfs[0].bbox
 
-  // Find the keyframe immediately before and after the current time
   let before: Keyframe | null = null
   let after: Keyframe | null = null
 
   for (const kf of kfs) {
     if (kf.time_ms <= timeMs) {
-      // Keep the latest keyframe at or before timeMs
       if (!before || kf.time_ms > before.time_ms) before = kf
     } else {
-      // Keep the earliest keyframe after timeMs
       if (!after || kf.time_ms < after.time_ms) after = kf
     }
   }
 
-  // Clamp to the start or end of the keyframe sequence
   if (before && !after) return before.bbox
   if (after && !before) return after.bbox
   if (!before || !after) return null
 
-  // Linear interpolation: t=0 at `before`, t=1 at `after`
   const t = (timeMs - before.time_ms) / (after.time_ms - before.time_ms)
   return {
     x: Math.round(before.bbox.x + (after.bbox.x - before.bbox.x) * t),

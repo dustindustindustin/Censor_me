@@ -4,9 +4,8 @@ Censor Me — FastAPI Backend Entry Point
 Startup sequence:
 1. Detect GPU/CUDA availability
 2. Verify ffmpeg on PATH
-3. Initialize PaddleOCR models
-4. Initialize Presidio + spaCy models
-5. Mount API routers
+3. Lazy-initialize EasyOCR + Presidio models on first scan (SKIP_MODEL_INIT=1 default)
+4. Mount API routers
 """
 
 from contextlib import asynccontextmanager

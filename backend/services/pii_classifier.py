@@ -24,29 +24,38 @@ Key design decisions
   Unmapped types fall back to ``PiiType.UNKNOWN``.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 
-from presidio_analyzer import AnalyzerEngine, RecognizerResult
+logger = logging.getLogger(__name__)
 
 from backend.models.events import PiiType
 from backend.services.ocr_service import BoxResult
 
 
 # Maps Presidio entity type strings to the app's PiiType enum.
-# Add entries here to handle additional Presidio recognizers.
+# Only entity types listed here are kept — everything else is dropped.
 _PRESIDIO_TYPE_MAP: dict[str, PiiType] = {
     "PHONE_NUMBER":    PiiType.PHONE,
     "EMAIL_ADDRESS":   PiiType.EMAIL,
     "PERSON":          PiiType.PERSON,
-    "LOCATION":        PiiType.ADDRESS,
     "US_SSN":          PiiType.SSN,
     "CREDIT_CARD":     PiiType.CREDIT_CARD,
     "US_BANK_NUMBER":  PiiType.ACCOUNT_ID,
     "IP_ADDRESS":      PiiType.ACCOUNT_ID,
-    "URL":             PiiType.UNKNOWN,
-    "DATE_TIME":       PiiType.UNKNOWN,
+    # Intentionally excluded:
+    # "LOCATION" — spaCy NER maps navigation items, brand names, and page headings
+    #              as locations in UI/intranet text (>80% false positive rate).
+    #              Postal codes are still caught via Presidio's US_ZIP_CODE recognizer.
+    # "DATE_TIME" — dates on screen are not PII (anniversaries, post dates, etc.)
+    # "URL"       — public URLs are not PII; custom regex rules cover private paths
+    # "NRP"       — nationalities/religious/political groups; too noisy for UI text
 }
+
+# Minimum character length for NLP-based PERSON entities.
+# Single-character or very short matches ("I", "Al") are nearly always false positives.
+_PERSON_MIN_CHARS = 4
 
 
 @dataclass
@@ -89,10 +98,31 @@ class PiiClassifier:
             confidence_threshold: Minimum Presidio score to include a result.
                 Values below this are silently dropped. Range [0.0, 1.0].
         """
-        self._analyzer = AnalyzerEngine()
+        self._analyzer = None  # Lazy-loaded on first classify() call
         self._threshold = confidence_threshold
         # Populated via set_custom_rules(); empty until rules are loaded.
         self._custom_rules: list[dict] = []
+
+    def _get_analyzer(self):
+        """
+        Return the Presidio AnalyzerEngine, initializing it on first call.
+
+        Raises RuntimeError if initialization fails so the caller (scan pipeline)
+        can surface a clear error rather than silently returning no findings.
+        """
+        if self._analyzer is None:
+            try:
+                from presidio_analyzer import AnalyzerEngine
+                logger.info("Initializing Presidio AnalyzerEngine (first scan frame)…")
+                self._analyzer = AnalyzerEngine()
+                logger.info("Presidio AnalyzerEngine ready.")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Presidio failed to initialize: {e}. "
+                    "Ensure presidio-analyzer is installed and the spaCy model is present. "
+                    "Run: python -m spacy download en_core_web_lg"
+                ) from e
+        return self._analyzer
 
     def set_custom_rules(self, rules: list[dict]) -> None:
         """
@@ -151,21 +181,48 @@ class PiiClassifier:
             composite += separator  # separator is NOT included in [start, end)
 
         # --- Presidio analysis (single call for the whole frame) ---
+        logger.debug("OCR found %d boxes in frame %d: %r", len(ocr_results), frame_index,
+                     [b.text for b in ocr_results])
+        # _get_analyzer() raises RuntimeError on init failure — let it propagate
+        # so the scan surfaces a clear error instead of silently returning no findings.
+        analyzer = self._get_analyzer()
         try:
-            results: list[RecognizerResult] = self._analyzer.analyze(
+            results = analyzer.analyze(
                 text=composite,
                 language="en",
             )
-        except Exception:
-            # Presidio can fail on malformed input; degrade gracefully.
+        except Exception as e:
+            logger.warning("Presidio analysis failed on frame %d: %s", frame_index, e)
             results = []
+
+        logger.debug("Presidio returned %d results for frame %d (threshold=%.2f): %s",
+                     len(results), frame_index, self._threshold,
+                     [(r.entity_type, round(r.score, 2), composite[r.start:r.end]) for r in results])
 
         for result in results:
             if result.score < self._threshold:
                 continue
 
-            pii_type = _PRESIDIO_TYPE_MAP.get(result.entity_type, PiiType.UNKNOWN)
-            matched_text = composite[result.start:result.end]
+            # Only keep entity types explicitly in the map — drop everything else
+            # (DATE_TIME, LOCATION, URL, NRP, and any future Presidio additions).
+            pii_type = _PRESIDIO_TYPE_MAP.get(result.entity_type)
+            if pii_type is None:
+                logger.debug(
+                    "Skipping entity type %r (not in type map) on frame %d",
+                    result.entity_type, frame_index,
+                )
+                continue
+
+            matched_text = composite[result.start:result.end].strip()
+
+            # PERSON: require a minimum character length to filter single-char or
+            # very short NLP matches that are almost always false positives.
+            if result.entity_type == "PERSON" and len(matched_text) < _PERSON_MIN_CHARS:
+                logger.debug(
+                    "Skipping short PERSON match %r (< %d chars) on frame %d",
+                    matched_text, _PERSON_MIN_CHARS, frame_index,
+                )
+                continue
 
             # Find which OCR box's text span overlaps with this result
             box = self._find_box(result.start, result.end, offsets)

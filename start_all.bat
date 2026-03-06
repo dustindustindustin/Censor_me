@@ -1,14 +1,14 @@
 @echo off
+chcp 65001 > nul
 title Censor Me
 setlocal
 
 rem Capture the project root directory safely, even with spaces in the path.
-rem %~dp0 includes a trailing backslash — strip it for clean concatenation.
 set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
 echo ==========================================
-echo           Censor Me — Starting
+echo           Censor Me - Starting
 echo ==========================================
 echo.
 
@@ -26,20 +26,19 @@ if not exist "%ROOT%\.venv\Scripts\uvicorn.exe" (
     exit /b 1
 )
 
-rem Launch backend in a new window.
-rem The full path to uvicorn is used to avoid working-directory issues.
+rem Launch backend in its own window (start_backend.bat handles port cleanup and pause)
 echo Starting backend on http://localhost:8010 ...
-start "Censor Me — Backend" cmd /k "cd /d "%ROOT%" && set SKIP_MODEL_INIT=1 && "%ROOT%\.venv\Scripts\uvicorn.exe" backend.main:app --reload --port 8010 --host 127.0.0.1 --log-level warning"
+start "Censor Me - Backend" cmd /k ""%ROOT%\start_backend.bat""
 
-rem Give uvicorn a moment to bind to the port before launching the browser
-echo Waiting 4 seconds for backend to start...
-timeout /t 4 /nobreak > nul
+rem Poll backend until it responds (up to 60 seconds) before launching the frontend
+echo Waiting for backend to be ready on http://localhost:8010 ...
+powershell -NoProfile -Command "$deadline = (Get-Date).AddSeconds(60); $ready = $false; while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest -Uri 'http://localhost:8010/system/status' -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop; if ($r.StatusCode -eq 200) { $ready = $true; break } } catch {} Start-Sleep -Seconds 1 }; if (-not $ready) { Write-Host 'WARNING: backend did not respond within 60 s — launching frontend anyway.' }"
 
-rem Launch frontend in a new window
+rem Launch frontend in its own window
 echo Starting frontend on http://localhost:5173 ...
-start "Censor Me — Frontend" cmd /k "cd /d "%ROOT%\frontend" && node_modules\.bin\vite.CMD --port 5173"
+start "Censor Me - Frontend" cmd /k ""%ROOT%\start_frontend.bat""
 
-rem Wait another moment, then open the browser
+rem Wait for Vite to spin up, then open the browser
 timeout /t 3 /nobreak > nul
 echo Opening browser...
 start http://localhost:5173

@@ -22,12 +22,15 @@ via WebSocket (``WS /scan/progress/{scan_id}``).
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Callable
 
 import cv2
 
 from backend.models.events import RedactionEvent
+
+logger = logging.getLogger(__name__)
 from backend.models.project import ProjectFile
 from backend.services.event_linker import link_candidates
 from backend.services.frame_sampler import FrameSampler
@@ -51,6 +54,7 @@ class ScanOrchestrator:
         project_dir: Path,
         emit: Callable[[dict], None],
         use_gpu: bool = False,
+        rules: list[dict] | None = None,
     ) -> None:
         """
         Args:
@@ -59,6 +63,8 @@ class ScanOrchestrator:
             emit:        Callback invoked with a progress dict after each pipeline step.
                          These dicts are forwarded to the frontend via WebSocket.
             use_gpu:     Whether GPU acceleration is available for OCR inference.
+            rules:       Serialized Rule dicts from the rules API (default + custom).
+                         Passed to PiiClassifier for regex rule evaluation.
         """
         self._project = project
         self._project_dir = project_dir
@@ -70,6 +76,9 @@ class ScanOrchestrator:
         self._classifier = PiiClassifier(
             confidence_threshold=project.scan_settings.confidence_threshold
         )
+        if rules:
+            self._classifier.set_custom_rules(rules)
+            logger.info("Loaded %d rules into classifier.", len(rules))
         self._tracker = TrackerService()
 
     async def run(self) -> list[RedactionEvent]:
@@ -88,9 +97,21 @@ class ScanOrchestrator:
             which catches it, sets scan status to 'error', and emits an error event.
         """
         video_path = Path(self._project.video.path)
+        if not video_path.exists():
+            raise FileNotFoundError(
+                f"Source video not found at: {video_path}. "
+                "The file may have been moved or deleted since it was imported."
+            )
+
         metadata = self._project.video
         interval = self._project.scan_settings.ocr_sample_interval
         scale = self._project.scan_settings.ocr_resolution_scale
+        confidence_threshold = self._project.scan_settings.confidence_threshold
+
+        logger.info(
+            "Scan starting — video: %s | interval: every %d frames | scale: %.1f | threshold: %.2f | GPU: %s",
+            video_path.name, interval, scale, confidence_threshold, self._use_gpu,
+        )
 
         # --- Stage 1: Plan adaptive frame sampling ---
         # FrameSampler uses scene-change detection to insert burst sampling
@@ -125,8 +146,10 @@ class ScanOrchestrator:
 
             time_ms = int((frame_idx / fps) * 1000)
 
-            # Stage 2: detect text regions in this frame
-            ocr_results = self._ocr.process_frame(frame)
+            # Stage 2: detect text regions in this frame.
+            # Run in a thread pool — EasyOCR is CPU/GPU-bound and would block
+            # the asyncio event loop if called directly in a coroutine.
+            ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
 
             # Stage 3: classify detected text as PII or non-PII
             candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
@@ -148,6 +171,21 @@ class ScanOrchestrator:
             await asyncio.sleep(0)
 
         cap.release()
+
+        logger.info(
+            "OCR complete — %d frames processed, %d total candidates found. "
+            "If candidates=0, check OCR boxes in progress events and Presidio initialization.",
+            processed, len(all_candidates),
+        )
+        if len(all_candidates) == 0:
+            logger.warning(
+                "No PII candidates found. Possible causes: "
+                "(1) Presidio/spaCy model missing — run: python -m spacy download en_core_web_lg; "
+                "(2) OCR found no text — check backend logs for 'ocr_boxes' values; "
+                "(3) Confidence threshold %.2f too high — lower it in scan settings; "
+                "(4) Video path wrong or file unreadable.",
+                confidence_threshold,
+            )
 
         # --- Stage 4: Link per-frame candidates into time-range events ---
         self._emit({"stage": "linking", "total_candidates": len(all_candidates)})

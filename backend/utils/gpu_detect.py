@@ -75,6 +75,26 @@ def detect_gpu() -> GpuInfo:
         # nvidia-smi not found or timed out → no GPU
         pass
 
+    # --- Check 1b: Verify PyTorch can actually use CUDA ---
+    # nvidia-smi only confirms the driver is present. PyTorch may still be a
+    # CPU-only build (e.g., installed via `pip install torch` without the CUDA
+    # index). EasyOCR silently falls back to CPU in that case, so we must
+    # check torch.cuda.is_available() directly.
+    if cuda_available:
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                cuda_available = False
+                import logging
+                logging.getLogger(__name__).warning(
+                    "nvidia-smi detected a GPU but torch.cuda.is_available() returned False. "
+                    "PyTorch was likely installed without CUDA support. "
+                    "Reinstall PyTorch with CUDA: https://pytorch.org/get-started/locally/"
+                )
+        except ImportError:
+            # torch not installed yet — EasyOCR will handle this at model load time
+            pass
+
     # --- Check 2: CUDA toolkit version via nvcc ---
     if cuda_available:
         try:

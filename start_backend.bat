@@ -22,10 +22,7 @@ if not exist ".venv\Scripts\uvicorn.exe" (
 )
 
 rem Kill any process already holding port 8010 (stale previous run)
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8010 " ^| findstr "LISTENING"') do (
-    echo Stopping stale process on port 8010 (PID %%P)...
-    taskkill /f /pid %%P > nul 2>&1
-)
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8010 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('Stopping stale process on port 8010 (PID ' + $_.OwningProcess + ')...'); Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 
 echo Censor Me - Backend
 echo URL:      http://localhost:8010
@@ -36,6 +33,6 @@ echo Remove that line in this file to pre-load models at startup instead.
 echo.
 
 set SKIP_MODEL_INIT=1
-"%ROOT%\.venv\Scripts\uvicorn.exe" backend.main:app --reload --port 8010 --host 127.0.0.1 --log-level info
+"%ROOT%\.venv\Scripts\uvicorn.exe" backend.main:app --reload --port 8010 --host 127.0.0.1 --log-level debug
 
 pause

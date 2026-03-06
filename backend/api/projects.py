@@ -103,6 +103,58 @@ async def delete_project(project_id: str):
     return {"deleted": project_id}
 
 
+@router.post("/{project_id}/events")
+async def add_event(project_id: str, event) -> dict:
+    """
+    Append a single RedactionEvent to the project.
+
+    Used by the Frame Test modal to manually add a detected finding to
+    the project's censor list without running a full scan.
+    The event is saved to disk immediately.
+    """
+    from backend.models.events import RedactionEvent
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    validated = RedactionEvent.model_validate(event)
+    project = ProjectFile.load(project_dir)
+    project.events.append(validated)
+    project.save(project_dir)
+    return validated.model_dump()
+
+
+@router.patch("/{project_id}/events/{event_id}/keyframes")
+async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> dict:
+    """
+    Replace a single event's keyframe list.
+
+    Used by the resize-handle interaction in OverlayCanvas when the user
+    drags a corner/edge handle to resize a redaction box. The full keyframe
+    list is sent so the backend can save the updated positions.
+
+    Body: { "keyframes": [{ "time_ms": int, "bbox": { "x", "y", "w", "h" } }] }
+    """
+    from backend.models.events import Keyframe
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    raw_keyframes = body.get("keyframes", [])
+    validated_kfs = [Keyframe.model_validate(kf) for kf in raw_keyframes]
+
+    project = ProjectFile.load(project_dir)
+    for event in project.events:
+        if event.event_id == event_id:
+            event.keyframes = validated_kfs
+            project.save(project_dir)
+            return event.model_dump()
+
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
 @router.patch("/{project_id}/events/{event_id}/status")
 async def update_event_status(project_id: str, event_id: str, status: str):
     """

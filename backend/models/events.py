@@ -43,6 +43,7 @@ class PiiType(str, Enum):
     CREDIT_CARD = "credit_card"
     SSN = "ssn"
     ACCOUNT_ID = "account_id"
+    EMPLOYEE_ID = "employee_id"
     POSTAL_CODE = "postal_code"
     USERNAME = "username"
     CUSTOM = "custom"

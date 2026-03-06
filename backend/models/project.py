@@ -120,10 +120,11 @@ class ScanSettings(BaseModel):
         )
     )
     confidence_threshold: float = Field(
-        default=0.5,
+        default=0.35,
         description=(
             "Minimum Presidio confidence score [0.0–1.0] to include a detection. "
-            "Higher values reduce false positives; lower values improve recall."
+            "Higher values reduce false positives; lower values improve recall. "
+            "0.35 is recommended — Presidio phone/email recognizers often score 0.4–0.5."
         )
     )
     secure_mode: bool = Field(

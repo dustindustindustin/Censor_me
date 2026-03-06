@@ -14,10 +14,13 @@ Design notes
   which helps with small-font UI elements (e.g., table cells, status bars).
 """
 
+import logging
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # Module-level singleton for the EasyOCR reader.
 # Initialized on first call to _get_reader(); shared for the process lifetime.
@@ -42,6 +45,8 @@ def _get_reader(use_gpu: bool):
     if _reader_instance is None:
         import easyocr
         _reader_instance = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
+        device = "GPU (CUDA)" if use_gpu else "CPU"
+        logger.info(f"EasyOCR reader initialized on {device}")
     return _reader_instance
 
 
@@ -77,8 +82,8 @@ class OcrService:
                      Typically 5–10× faster than CPU on supported hardware.
         """
         self._use_gpu = use_gpu
-        # Warm up the reader immediately so the first scan call is not delayed.
-        _get_reader(use_gpu)
+        # Reader loads lazily on first process_frame() call (via _get_reader).
+        # Do NOT load here — this runs on the asyncio event loop and would block it.
 
     def process_frame(self, frame: np.ndarray) -> list[BoxResult]:
         """

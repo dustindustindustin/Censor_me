@@ -15,7 +15,7 @@
  */
 
 import axios from 'axios'
-import type { Project, SystemStatus } from '../types'
+import type { FrameTestResult, Project, RedactionEvent, SystemStatus } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -80,6 +80,15 @@ export async function getProject(projectId: string): Promise<Project> {
  */
 export async function deleteProject(projectId: string): Promise<void> {
   await api.delete(`/projects/${projectId}`)
+}
+
+/**
+ * Append a single RedactionEvent to the project.
+ * Used by the Frame Test modal to manually add a detected candidate.
+ */
+export async function addEventToProject(projectId: string, event: RedactionEvent): Promise<RedactionEvent> {
+  const { data } = await api.post(`/projects/${projectId}/events`, event)
+  return data
 }
 
 /**
@@ -154,6 +163,46 @@ export function openScanProgressSocket(scanId: string): WebSocket {
   // In dev, Vite's /ws proxy forwards this to ws://localhost:8010/scan/progress/{scanId}.
   const wsBase = window.location.origin.replace(/^http/, 'ws')
   return new WebSocket(`${wsBase}/ws/scan/progress/${scanId}`)
+}
+
+/**
+ * Replace a single event's keyframe list (used by resize handles).
+ */
+export async function updateEventKeyframes(
+  projectId: string,
+  eventId: string,
+  keyframes: import('../types').Keyframe[]
+): Promise<import('../types').RedactionEvent> {
+  const { data } = await api.patch(`/projects/${projectId}/events/${eventId}/keyframes`, { keyframes })
+  return data
+}
+
+/**
+ * Run CSRT tracking forward on a manually-drawn single-keyframe event.
+ * Densifies keyframes from the drawn frame to wherever the content disappears.
+ */
+export async function trackManualEvent(
+  projectId: string,
+  eventId: string
+): Promise<import('../types').RedactionEvent> {
+  const { data } = await api.post(`/scan/track-event/${projectId}/${eventId}`, null, {
+    timeout: 300_000,  // Tracking a long video can take minutes
+  })
+  return data
+}
+
+/**
+ * Run OCR + Presidio on a single frame and return raw, unfiltered results.
+ * Use this to verify detection is working before running a full scan.
+ *
+ * The timeout is long because the first call loads EasyOCR and Presidio models.
+ */
+export async function testFrame(projectId: string, frameIndex: number): Promise<FrameTestResult> {
+  const { data } = await api.get(`/scan/test-frame/${projectId}`, {
+    params: { frame_index: frameIndex },
+    timeout: 120_000,
+  })
+  return data
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────

@@ -50,10 +50,28 @@ _DEFAULT_RULES: list[Rule] = [
         priority=5,
         confidence=0.85,
     ),
+    Rule(
+        rule_id="employee_id_6digit",
+        name="Employee ID (6-digit)",
+        type="regex",
+        # Matches a 6-digit number optionally wrapped in parentheses.
+        # Covers "Name (139168)" and bare "139168" formats.
+        # Word boundaries prevent matching fragments of longer numbers.
+        pattern=r"\(?\b\d{6}\b\)?",
+        label="employee_id",
+        priority=8,
+        confidence=0.90,
+        description="6-digit employee/badge ID, e.g. (139168) or 139168.",
+    ),
 ]
 
 # In-memory custom rules (persist to disk in v0.2)
 _custom_rules: list[Rule] = []
+
+
+def get_all_rules() -> list[Rule]:
+    """Return all active rules: built-in defaults + user-defined custom rules."""
+    return _DEFAULT_RULES + _custom_rules
 
 
 @router.get("/")

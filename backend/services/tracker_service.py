@@ -85,6 +85,96 @@ class TrackerService:
         event.keyframes = filled_keyframes
         return event
 
+    def track_forward(
+        self,
+        event: RedactionEvent,
+        video_path: str,
+        fps: float,
+    ) -> RedactionEvent:
+        """
+        Track a single-keyframe event forward to the end of the video.
+
+        Used for manually-drawn boxes: the user draws a box at one point in
+        time and this method propagates it forward using CSRT until drift is
+        detected or the video ends. The event's keyframes and time_ranges are
+        updated in place.
+
+        Args:
+            event:      RedactionEvent with exactly one keyframe (the drawn box).
+            video_path: Absolute path to the source video file.
+            fps:        Frames per second of the source video.
+
+        Returns:
+            The same event with a densified keyframes list and updated time_range.
+        """
+        if not event.keyframes:
+            return event
+
+        kf_start = event.keyframes[0]
+        start_frame = int((kf_start.time_ms / 1000) * fps)
+
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        ret, frame = cap.read()
+        if not ret:
+            cap.release()
+            return event
+
+        bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
+        try:
+            tracker = cv2.legacy.TrackerCSRT_create()
+        except AttributeError:
+            tracker = cv2.TrackerCSRT_create()
+        tracker.init(frame, bbox_tuple)
+
+        roi = frame[
+            kf_start.bbox.y: kf_start.bbox.y + kf_start.bbox.h,
+            kf_start.bbox.x: kf_start.bbox.x + kf_start.bbox.w,
+        ]
+        ref_hist = self._compute_hist(roi)
+
+        filled: list[Keyframe] = [kf_start]
+        current_frame = start_frame + 1
+
+        while current_frame < total_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            success, tracked_bbox = tracker.update(frame)
+            time_ms = int((current_frame / fps) * 1000)
+
+            if success:
+                x, y, w, h = [int(v) for v in tracked_bbox]
+                x, y = max(0, x), max(0, y)
+
+                roi = frame[y: y + h, x: x + w]
+                if roi.size > 0:
+                    curr_hist = self._compute_hist(roi)
+                    drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
+                    if drift > _DRIFT_THRESHOLD:
+                        break
+
+                filled.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
+            else:
+                break
+
+            current_frame += 1
+
+        cap.release()
+
+        event.keyframes = filled
+        if filled:
+            if event.time_ranges:
+                event.time_ranges[0].end_ms = filled[-1].time_ms
+            else:
+                from backend.models.events import TimeRange
+                event.time_ranges = [TimeRange(start_ms=kf_start.time_ms, end_ms=filled[-1].time_ms)]
+
+        return event
+
     def _track_segment(
         self,
         cap: cv2.VideoCapture,
@@ -119,9 +209,13 @@ class TrackerService:
             # Video ended or seek failed — return only the start keyframe
             return [kf_start]
 
-        # Initialize CSRT tracker at the start keyframe's position
+        # Initialize CSRT tracker at the start keyframe's position.
+        # opencv-contrib-python ≥4.4 moved legacy trackers to cv2.legacy.*
         bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
-        tracker = cv2.TrackerCSRT_create()
+        try:
+            tracker = cv2.legacy.TrackerCSRT_create()
+        except AttributeError:
+            tracker = cv2.TrackerCSRT_create()
         tracker.init(frame, bbox_tuple)
 
         # Capture reference histogram for drift detection

@@ -20,7 +20,7 @@
  */
 export type PiiType =
   | 'phone' | 'email' | 'person' | 'address'
-  | 'credit_card' | 'ssn' | 'account_id'
+  | 'credit_card' | 'ssn' | 'account_id' | 'employee_id'
   | 'postal_code' | 'username' | 'custom' | 'manual' | 'unknown'
 
 /**
@@ -154,6 +154,62 @@ export interface GpuInfo {
 export interface SystemStatus {
   ready: boolean
   gpu: GpuInfo
+}
+
+// ── Test frame live overlay ───────────────────────────────────────────────────
+
+/** A single box drawn on the live video from a test-frame result (cyan overlay). */
+export interface TestFrameOverlayBox {
+  bbox: [number, number, number, number]  // [x, y, w, h] in source video pixels
+  pii_type: PiiType
+  text: string
+}
+
+// ── Frame test diagnostic ─────────────────────────────────────────────────────
+
+export interface OcrBox {
+  text: string
+  confidence: number
+  bbox: [number, number, number, number]  // [x, y, w, h]
+}
+
+export interface FrameTestCandidate {
+  text: string
+  pii_type: PiiType
+  confidence: number
+  bbox: [number, number, number, number]
+}
+
+export interface FrameTestRawResult {
+  entity_type: string
+  text: string
+  confidence: number
+  mapped_pii_type: PiiType | null
+  skip_reason: string | null
+  would_appear_in_scan: boolean
+}
+
+export interface FrameTestResult {
+  frame_index: number
+  time_ms: number
+  total_frames: number
+  fps: number
+  video_path: string
+  use_gpu: boolean
+  ocr: {
+    box_count: number
+    boxes: OcrBox[]
+  }
+  presidio: {
+    error: string | null
+    active_threshold: number
+    raw_count: number
+    kept_count: number
+    filtered_count: number
+    candidates: FrameTestCandidate[]
+    raw: FrameTestRawResult[]
+  }
+  error?: string
 }
 
 // ── WebSocket progress events ─────────────────────────────────────────────────
