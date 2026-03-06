@@ -31,7 +31,7 @@ interface Props {
 /** All valid PII types for the filter dropdown. */
 const PII_TYPES: PiiType[] = [
   'phone', 'email', 'person', 'address', 'credit_card',
-  'ssn', 'account_id', 'postal_code', 'username', 'custom', 'manual', 'unknown',
+  'ssn', 'account_id', 'employee_id', 'postal_code', 'username', 'custom', 'manual', 'unknown',
 ]
 
 /**

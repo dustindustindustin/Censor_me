@@ -37,16 +37,18 @@ export function Inspector({ style }: Props) {
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
 
-  // Debounce timer for strength slider — avoids firing an API call on every pixel of drag
+  // Debounce timers — avoid firing API calls on every pixel of drag/color change
   const strengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const event = events.find((e) => e.event_id === selectedEventId)
   const acceptedCount = events.filter((e) => e.status === 'accepted').length
 
-  // Clear debounce timer if event changes to avoid saving to the wrong event
+  // Clear debounce timers if event changes to avoid saving to the wrong event
   useEffect(() => {
     return () => {
       if (strengthTimer.current) clearTimeout(strengthTimer.current)
+      if (colorTimer.current) clearTimeout(colorTimer.current)
     }
   }, [selectedEventId])
 
@@ -98,8 +100,15 @@ export function Inspector({ style }: Props) {
   }
 
   const handleColor = (color: string) => {
-    if (!event) return
-    applyStyle({ ...event.redaction_style, color })
+    if (!project || !event) return
+    const newStyle = { ...event.redaction_style, color }
+    // Optimistic store update for live preview of color in the box overlay label
+    updateEvent({ ...event, redaction_style: newStyle })
+    // Debounce the API call — color pickers fire onChange continuously while dragging
+    if (colorTimer.current) clearTimeout(colorTimer.current)
+    colorTimer.current = setTimeout(() => {
+      updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
+    }, 400)
   }
 
   return (

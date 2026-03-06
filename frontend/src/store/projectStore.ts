@@ -142,7 +142,17 @@ export const useProjectStore = create<ProjectStore>((set) => ({
 
   project: null,
   setProject: (p) => set({ project: p, events: p.events }),
-  clearProject: () => set({ project: null, events: [], selectedEventId: null }),
+  clearProject: () => set({
+    project: null,
+    events: [],
+    selectedEventId: null,
+    // Reset all per-session UI state so it doesn't bleed into the next project
+    testFrameOverlay: null,
+    zoomLevel: 1,
+    drawingMode: false,
+    scanId: null,
+    scanProgress: DEFAULT_SCAN_PROGRESS,
+  }),
 
   // ── Events ──────────────────────────────────────────────────────────────────
 
