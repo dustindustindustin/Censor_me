@@ -48,9 +48,11 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
   const [result, setResult] = useState<FrameTestResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // Tracks which candidate indices have been added to the project (by "frameIdx:candidateIdx")
-  const [addedKeys, setAddedKeys] = useState<Set<string>>(new Set())
-  const [addingKey, setAddingKey] = useState<string | null>(null)
+  // Indices of candidates the user has unchecked (excluded from adding)
+  const [excluded, setExcluded] = useState<Set<number>>(new Set())
+  // Whether the user has committed the selection ("Add Selected" was clicked)
+  const [committed, setCommitted] = useState(false)
+  const [committing, setCommitting] = useState(false)
   const { addEvent, setTestFrameOverlay } = useProjectStore((s) => ({
     addEvent: s.addEvent,
     setTestFrameOverlay: s.setTestFrameOverlay,
@@ -61,7 +63,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     setLoading(true)
     setError(null)
     setResult(null)
-    setAddedKeys(new Set())
+    setExcluded(new Set())
+    setCommitted(false)
     setTestFrameOverlay(null)  // clear stale overlay while loading
     try {
       const data = await testFrame(projectId, idx)
@@ -83,31 +86,44 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     }
   }
 
-  const handleAdd = async (candidate: FrameTestCandidate, candidateIdx: number, timeMs: number) => {
-    const key = `${frameIndex}:${candidateIdx}`
-    if (addedKeys.has(key) || addingKey === key) return
-    setAddingKey(key)
+  const handleToggle = (idx: number) => {
+    if (committed || committing) return
+    setExcluded((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }
+
+  const handleAddSelected = async (candidates: FrameTestCandidate[], timeMs: number) => {
+    if (committed || committing) return
+    const toAdd = candidates.filter((_, i) => !excluded.has(i))
+    if (toAdd.length === 0) return
+    setCommitting(true)
     try {
-      const [x, y, w, h] = candidate.bbox
-      const event: RedactionEvent = {
-        event_id: crypto.randomUUID(),
-        source: 'auto',
-        pii_type: candidate.pii_type,
-        confidence: candidate.confidence,
-        extracted_text: candidate.text,
-        time_ranges: [{ start_ms: timeMs, end_ms: timeMs }],
-        keyframes: [{ time_ms: timeMs, bbox: { x, y, w, h } }],
-        tracking_method: 'none',
-        redaction_style: { type: 'blur', strength: 15, color: '#000000' },
-        status: 'accepted',
+      for (const c of toAdd) {
+        const [x, y, w, h] = c.bbox
+        const event: RedactionEvent = {
+          event_id: crypto.randomUUID(),
+          source: 'auto',
+          pii_type: c.pii_type,
+          confidence: c.confidence,
+          extracted_text: c.text,
+          time_ranges: [{ start_ms: timeMs, end_ms: timeMs }],
+          keyframes: [{ time_ms: timeMs, bbox: { x, y, w, h } }],
+          tracking_method: 'none',
+          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          status: 'accepted',
+        }
+        const saved = await addEventToProject(projectId, event)
+        addEvent(saved)
       }
-      const saved = await addEventToProject(projectId, event)
-      addEvent(saved)
-      setAddedKeys((prev) => new Set(prev).add(key))
+      setCommitted(true)
     } catch (e) {
-      console.error('Failed to add event:', e)
+      console.error('Failed to add events:', e)
     } finally {
-      setAddingKey(null)
+      setCommitting(false)
     }
   }
 
@@ -306,51 +322,70 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                       <EmptyNote>
                         All {result.presidio.raw_count} Presidio results were filtered out. See "Filtered" below.
                       </EmptyNote>
-                    ) : (
-                      <>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-                          Check a finding to add it to the censor list.
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
-                          {result.presidio.candidates.map((c, i) => {
-                            const key = `${frameIndex}:${i}`
-                            const isAdded = addedKeys.has(key)
-                            const isAdding = addingKey === key
-                            return (
-                              <div key={i} style={{
-                                display: 'flex', alignItems: 'center', gap: 10,
-                                padding: '6px 10px', background: 'var(--surface)',
-                                borderRadius: 4, fontSize: 13,
-                                borderLeft: `3px solid ${isAdded ? 'var(--accept)' : 'var(--accent)'}`,
-                                opacity: isAdding ? 0.6 : 1,
-                                transition: 'opacity 0.15s',
-                              }}>
-                                <input
-                                  type="checkbox"
-                                  checked={isAdded}
-                                  disabled={isAdded || addingKey !== null}
-                                  onChange={() => handleAdd(c, i, result.time_ms)}
-                                  title={isAdded ? 'Added to censor list' : 'Add to censor list'}
-                                  style={{ cursor: isAdded || addingKey !== null ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
-                                />
-                                <span style={{
-                                  fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
-                                  color: PII_COLORS[c.pii_type] ?? 'var(--text-muted)',
-                                  textTransform: 'uppercase', whiteSpace: 'nowrap',
+                    ) : (() => {
+                      const checkedCount = result.presidio.candidates.length - excluded.size
+                      return (
+                        <>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                            All findings are selected by default. Uncheck any false positives before adding.
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                            {result.presidio.candidates.map((c, i) => {
+                              const isChecked = !excluded.has(i)
+                              const isLocked = committed || committing
+                              return (
+                                <div key={i} style={{
+                                  display: 'flex', alignItems: 'center', gap: 10,
+                                  padding: '6px 10px', background: 'var(--surface)',
+                                  borderRadius: 4, fontSize: 13,
+                                  borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
+                                  opacity: isChecked ? 1 : 0.45,
+                                  transition: 'opacity 0.15s',
                                 }}>
-                                  {c.pii_type}
-                                </span>
-                                <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{c.text}</span>
-                                <ConfBadge value={c.confidence} />
-                                {isAdded && (
-                                  <span style={{ fontSize: 11, color: 'var(--accept)', whiteSpace: 'nowrap' }}>✓ added</span>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </>
-                    )}
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    disabled={isLocked}
+                                    onChange={() => handleToggle(i)}
+                                    title={isChecked ? 'Uncheck to exclude from censor list' : 'Check to include'}
+                                    style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
+                                  />
+                                  <span style={{
+                                    fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+                                    color: PII_COLORS[c.pii_type] ?? 'var(--text-muted)',
+                                    textTransform: 'uppercase', whiteSpace: 'nowrap',
+                                  }}>
+                                    {c.pii_type}
+                                  </span>
+                                  <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{c.text}</span>
+                                  <ConfBadge value={c.confidence} />
+                                </div>
+                              )
+                            })}
+                          </div>
+
+                          {/* Add selected button */}
+                          {committed ? (
+                            <div style={{ fontSize: 12, color: 'var(--accept)', fontWeight: 600 }}>
+                              ✓ Added to censor list
+                            </div>
+                          ) : (
+                            <button
+                              className="primary"
+                              onClick={() => handleAddSelected(result.presidio.candidates, result.time_ms)}
+                              disabled={committing || checkedCount === 0}
+                              style={{ width: '100%', fontSize: 13 }}
+                            >
+                              {committing
+                                ? 'Adding…'
+                                : checkedCount === 0
+                                ? 'No findings selected'
+                                : `Add ${checkedCount} finding${checkedCount !== 1 ? 's' : ''} to Censor List`}
+                            </button>
+                          )}
+                        </>
+                      )
+                    })()}
 
                     {/* Filtered results (collapsible) */}
                     {result.presidio.filtered_count > 0 && (

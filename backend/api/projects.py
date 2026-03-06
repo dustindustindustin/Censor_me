@@ -104,7 +104,7 @@ async def delete_project(project_id: str):
 
 
 @router.post("/{project_id}/events")
-async def add_event(project_id: str, event) -> dict:
+async def add_event(project_id: str, event: dict) -> dict:
     """
     Append a single RedactionEvent to the project.
 
