@@ -7,7 +7,7 @@
  * what the scanner sees and why findings may or may not appear.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { addEventToProject, testFrame } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import type { FrameTestCandidate, FrameTestRawResult, FrameTestResult, RedactionEvent, TestFrameOverlayBox } from '../../types'
@@ -111,10 +111,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     }
   }
 
-  // Auto-run on open
-  useEffect(() => {
-    runTest(initialFrameIndex)
-  }, [])
+  // No auto-run on open — the button starts as "Run Test" so the user
+  // can confirm the frame before waiting for OCR to complete.
 
   const handleFrameChange = (raw: string) => {
     setInputValue(raw)

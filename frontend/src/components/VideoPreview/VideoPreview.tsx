@@ -381,7 +381,7 @@ export function VideoPreview({ videoRef, style }: Props) {
       {showFrameTest && project?.video && (
         <FrameTestModal
           projectId={project.project_id}
-          initialFrameIndex={Math.floor((currentTime / 1000) * project.video.fps)}
+          initialFrameIndex={Math.max(1, Math.floor((currentTime / 1000) * project.video.fps))}
           totalFrames={Math.floor((project.video.duration_ms / 1000) * project.video.fps)}
           fps={project.video.fps}
           onClose={closeFrameTest}
