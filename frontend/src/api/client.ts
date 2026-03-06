@@ -166,6 +166,19 @@ export function openScanProgressSocket(scanId: string): WebSocket {
 }
 
 /**
+ * Update the redaction style (blur/pixelate/solid_box, strength, color) for one event.
+ * Changes take effect at export time; no re-scan needed.
+ */
+export async function updateEventStyle(
+  projectId: string,
+  eventId: string,
+  style: import('../types').RedactionStyle
+): Promise<import('../types').RedactionEvent> {
+  const { data } = await api.patch(`/projects/${projectId}/events/${eventId}/style`, style)
+  return data
+}
+
+/**
  * Replace a single event's keyframe list (used by resize handles).
  */
 export async function updateEventKeyframes(

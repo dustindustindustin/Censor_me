@@ -125,6 +125,32 @@ async def add_event(project_id: str, event) -> dict:
     return validated.model_dump()
 
 
+@router.patch("/{project_id}/events/{event_id}/style")
+async def update_event_style(project_id: str, event_id: str, body: dict) -> dict:
+    """
+    Update the redaction style for a single event.
+
+    Body: { "type": "blur"|"pixelate"|"solid_box", "strength": int, "color": "#rrggbb" }
+
+    The style is applied at export time by RedactionRenderer. Changing it does not
+    require re-scanning — only re-exporting.
+    """
+    from backend.models.events import RedactionStyle
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = ProjectFile.load(project_dir)
+    for event in project.events:
+        if event.event_id == event_id:
+            event.redaction_style = RedactionStyle.model_validate(body)
+            project.save(project_dir)
+            return event.model_dump()
+
+    raise HTTPException(status_code=404, detail="Event not found")
+
+
 @router.patch("/{project_id}/events/{event_id}/keyframes")
 async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> dict:
     """

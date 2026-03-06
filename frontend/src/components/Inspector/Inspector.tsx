@@ -4,27 +4,51 @@
  * Handles export with real-time progress via WebSocket.
  */
 
-import { exportDownloadUrl, startExport, updateEventStatus } from '../../api/client'
+import { useEffect, useRef } from 'react'
+import { exportDownloadUrl, startExport, updateEventStatus, updateEventStyle } from '../../api/client'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
-import type { RedactionStyleType } from '../../types'
+import type { RedactionStyle, RedactionStyleType } from '../../types'
 
 interface Props {
   style?: React.CSSProperties
 }
 
+const STYLE_LABELS: Record<RedactionStyleType, string> = {
+  blur: 'Blur',
+  pixelate: 'Pixelate',
+  solid_box: 'Box',
+}
+
+const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
+  blur: 'Radius',
+  pixelate: 'Block size',
+  solid_box: 'N/A',
+}
+
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
     updateEventStatus: s.updateEventStatus,
+    updateEvent: s.updateEvent,
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
 
+  // Debounce timer for strength slider — avoids firing an API call on every pixel of drag
+  const strengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const event = events.find((e) => e.event_id === selectedEventId)
   const acceptedCount = events.filter((e) => e.status === 'accepted').length
+
+  // Clear debounce timer if event changes to avoid saving to the wrong event
+  useEffect(() => {
+    return () => {
+      if (strengthTimer.current) clearTimeout(strengthTimer.current)
+    }
+  }, [selectedEventId])
 
   const handleExport = async () => {
     if (!project) return
@@ -41,6 +65,41 @@ export function Inspector({ style }: Props) {
     if (!project || !event) return
     updateLocal(event.event_id, status)
     await updateEventStatus(project.project_id, event.event_id, status)
+  }
+
+  const applyStyle = async (newStyle: RedactionStyle) => {
+    if (!project || !event) return
+    // Optimistic update — the overlay and list reflect the new style immediately
+    updateEvent({ ...event, redaction_style: newStyle })
+    try {
+      await updateEventStyle(project.project_id, event.event_id, newStyle)
+    } catch (err) {
+      console.error('Failed to save style:', err)
+      // Revert on failure
+      updateEvent(event)
+    }
+  }
+
+  const handleStyleType = (type: RedactionStyleType) => {
+    if (!event) return
+    applyStyle({ ...event.redaction_style, type })
+  }
+
+  const handleStrength = (value: number) => {
+    if (!project || !event) return
+    const newStyle = { ...event.redaction_style, strength: value }
+    // Update store immediately for responsive feel
+    updateEvent({ ...event, redaction_style: newStyle })
+    // Debounce the API call — only save 400ms after the user stops dragging
+    if (strengthTimer.current) clearTimeout(strengthTimer.current)
+    strengthTimer.current = setTimeout(() => {
+      updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
+    }, 400)
+  }
+
+  const handleColor = (color: string) => {
+    if (!event) return
+    applyStyle({ ...event.redaction_style, color })
   }
 
   return (
@@ -134,37 +193,82 @@ export function Inspector({ style }: Props) {
           </Field>
 
           <Field label="Redaction style">
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              {(['blur', 'pixelate', 'solid_box'] as RedactionStyleType[]).map((t) => (
-                <button
-                  key={t}
-                  style={{
-                    flex: 1,
-                    padding: '4px 6px',
-                    fontSize: 11,
-                    background: event.redaction_style.type === t ? 'var(--accent)' : 'var(--bg)',
-                    color: event.redaction_style.type === t ? '#fff' : 'var(--text)',
-                    cursor: 'pointer',
-                  }}
-                  title={t}
-                >
-                  {t === 'solid_box' ? 'box' : t}
-                </button>
-              ))}
+            {/* Style type selector */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              {(['blur', 'pixelate', 'solid_box'] as RedactionStyleType[]).map((t) => {
+                const active = event.redaction_style.type === t
+                return (
+                  <button
+                    key={t}
+                    onClick={() => handleStyleType(t)}
+                    style={{
+                      flex: 1,
+                      padding: '5px 4px',
+                      fontSize: 11,
+                      fontWeight: active ? 700 : 400,
+                      background: active ? 'var(--accent)' : 'var(--bg)',
+                      color: active ? '#fff' : 'var(--text)',
+                      border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                    }}
+                    title={
+                      t === 'blur' ? 'Gaussian blur — obscures text while looking natural'
+                      : t === 'pixelate' ? 'Pixelate — mosaic effect'
+                      : 'Solid box — opaque filled rectangle'
+                    }
+                  >
+                    {STYLE_LABELS[t]}
+                  </button>
+                )
+              })}
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <label style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 52 }}>Strength</label>
-              <input
-                type="range"
-                min={3}
-                max={51}
-                value={event.redaction_style.strength}
-                style={{ flex: 1 }}
-                readOnly
-              />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 20 }}>
-                {event.redaction_style.strength}
-              </span>
+
+            {/* Strength slider (hidden for solid_box) */}
+            {event.redaction_style.type !== 'solid_box' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 64 }}>
+                  {STRENGTH_LABELS[event.redaction_style.type]}
+                </label>
+                <input
+                  type="range"
+                  min={3}
+                  max={51}
+                  step={2}
+                  value={event.redaction_style.strength}
+                  onChange={(e) => handleStrength(parseInt(e.target.value, 10))}
+                  style={{ flex: 1, accentColor: 'var(--accent)' }}
+                />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
+                  {event.redaction_style.strength}
+                </span>
+              </div>
+            )}
+
+            {/* Color picker (solid_box only) */}
+            {event.redaction_style.type === 'solid_box' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
+                <input
+                  type="color"
+                  value={event.redaction_style.color}
+                  onChange={(e) => handleColor(e.target.value)}
+                  style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: 'none' }}
+                  title="Box fill color"
+                />
+                <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                  {event.redaction_style.color}
+                </code>
+              </div>
+            )}
+
+            {/* Style description */}
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontStyle: 'italic' }}>
+              {event.redaction_style.type === 'blur'
+                ? 'Gaussian blur applied to the region. Higher radius = stronger obscuring.'
+                : event.redaction_style.type === 'pixelate'
+                ? 'Mosaic pixelation. Higher block size = larger, more visible pixels.'
+                : 'Opaque filled rectangle. No underlying content visible.'}
             </div>
           </Field>
 
