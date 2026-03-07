@@ -42,10 +42,24 @@ def _model_dir() -> Path:
 
 
 def _download_file(url: str, dest: Path) -> None:
-    """Download a file from a URL to a local path."""
+    """Download a file from a URL to a local path, streaming to a temp file then atomically replacing."""
+    import hashlib
+    import tempfile
     import urllib.request
     logger.info("Downloading face detector model file: %s", dest.name)
-    urllib.request.urlretrieve(url, str(dest))
+    fd, tmp_path = tempfile.mkstemp(dir=str(dest.parent), suffix=".tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, os.fdopen(fd, "wb") as tmp_f:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                tmp_f.write(chunk)
+        os.replace(tmp_path, str(dest))
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
     logger.info("Downloaded %s (%.1f MB)", dest.name, dest.stat().st_size / 1_048_576)
 
 

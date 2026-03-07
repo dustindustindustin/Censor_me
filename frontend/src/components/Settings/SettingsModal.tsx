@@ -20,6 +20,7 @@ import {
 import { useProjectStore } from '../../store/projectStore'
 import { PII_LABEL_COLORS, theme } from '../../styles/theme'
 import type { OutputSettings, PiiType, Rule, ScanSettings } from '../../types'
+import { rangePct } from '../../utils/format'
 
 interface Props {
   projectId: string
@@ -46,10 +47,6 @@ const OVERRIDE_TYPES: { key: string; label: string }[] = [
   { key: 'account_id', label: 'Account ID' },
   { key: 'face', label: 'Face' },
 ]
-
-function rangePct(value: number, min: number, max: number): string {
-  return `${((value - min) / (max - min)) * 100}%`
-}
 
 function LabelBadge({ label }: { label: string | null }) {
   if (!label) return null

@@ -8,6 +8,7 @@ GET  /scan/status/{scan_id}      — poll status (alternative to WebSocket)
 
 import asyncio
 import logging
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -49,6 +50,15 @@ async def start_scan(project_id: str, request: Request):
 
     # Atomic check-and-register to prevent duplicate scans
     async with _scan_lock:
+        # Prune stale scan records older than 10 minutes (except running scans)
+        now = time.time()
+        stale_ids = [
+            k for k, v in _active_scans.items()
+            if now - v.get("created_at", 0) > 600 and v["status"] != "running"
+        ]
+        for sid in stale_ids:
+            _active_scans.pop(sid, None)
+
         if project_id in _scanning_projects:
             existing_scan_id = _scanning_projects[project_id]
             return {"scan_id": existing_scan_id, "resumed": True}
@@ -62,6 +72,7 @@ async def start_scan(project_id: str, request: Request):
             "project_id": project_id,
             "status": "queued",
             "progress": deque(maxlen=500),
+            "created_at": now,
         }
         _scanning_projects[project_id] = scan_id
 
@@ -186,6 +197,9 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
+        if not fps or fps <= 0:
+            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+            fps = 30.0
 
         safe_idx = min(frame_index, max(0, total_frames - 1))
         cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
@@ -395,6 +409,9 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
         cap = cv2.VideoCapture(str(video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
+        if not fps or fps <= 0:
+            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+            fps = 30.0
 
         safe_idx = min(frame_index, max(0, total_frames - 1))
         cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
@@ -490,6 +507,7 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
             "project_id": project_id,
             "status": "queued",
             "progress": deque(maxlen=500),
+            "created_at": time.time(),
         }
         _scanning_projects[project_id] = scan_id
 

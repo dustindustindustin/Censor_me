@@ -104,6 +104,20 @@ class Rule(BaseModel):
     )
 
 
+class RuleUpdate(BaseModel):
+    """Partial update model for PATCH /rules/custom/{rule_id}. All fields optional."""
+
+    name: str | None = None
+    type: RuleType | None = None
+    enabled: bool | None = None
+    pattern: str | None = None
+    label: str | None = None
+    priority: int | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    context_pixels: int | None = None
+    description: str | None = None
+
+
 class RuleSet(BaseModel):
     """
     A named, versioned collection of rules — typically a preset or workspace config.

@@ -11,3 +11,7 @@ export function formatMs(ms: number): string {
   if (h > 0) return `${h}:${String(m % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
+
+export function rangePct(value: number, min: number, max: number): string {
+  return `${((value - min) / (max - min)) * 100}%`
+}

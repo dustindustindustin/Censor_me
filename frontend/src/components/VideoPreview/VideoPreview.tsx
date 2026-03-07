@@ -10,7 +10,7 @@ import { getProject, importVideo, proxyVideoUrl, scanFrame, startRangeScan, star
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
 import { useProjectStore } from '../../store/projectStore'
-import { formatMs } from '../../utils/format'
+import { formatMs, rangePct } from '../../utils/format'
 import { FrameTestModal } from './FrameTestModal'
 import { OverlayCanvas } from './OverlayCanvas'
 import { Timeline } from './Timeline'
@@ -20,10 +20,6 @@ interface Props {
   style?: React.CSSProperties
 }
 
-
-function rangePct(value: number, min: number, max: number): string {
-  return `${((value - min) / (max - min)) * 100}%`
-}
 
 export function VideoPreview({ videoRef, style }: Props) {
   const {
@@ -46,6 +42,7 @@ export function VideoPreview({ videoRef, style }: Props) {
     setStaticDrawMode,
     addEvents,
     scanPreviewFrame,
+    addNotification,
   } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
@@ -66,6 +63,7 @@ export function VideoPreview({ videoRef, style }: Props) {
     setStaticDrawMode: s.setStaticDrawMode,
     addEvents: s.addEvents,
     scanPreviewFrame: s.scanPreviewFrame,
+    addNotification: s.addNotification,
   }))
 
   const [duration, setDuration] = useState(0)
@@ -166,6 +164,7 @@ export function VideoPreview({ videoRef, style }: Props) {
       setScanId(scan_id)
     } catch (err: unknown) {
       console.error('Scan failed to start:', err)
+      addNotification('Scan failed to start', 'error')
     }
   }
 
@@ -225,6 +224,7 @@ export function VideoPreview({ videoRef, style }: Props) {
     } catch (err) {
       setScanFrameMsg('Scan failed \u2014 check console')
       console.error('scanFrame error:', err)
+      addNotification('Frame scan failed', 'error')
     } finally {
       setScanningFrame(false)
       setTimeout(() => setScanFrameMsg(null), 4000)
@@ -241,6 +241,7 @@ export function VideoPreview({ videoRef, style }: Props) {
       setScanId(scan_id)
     } catch (err) {
       console.error('Range scan failed to start:', err)
+      addNotification('Range scan failed to start', 'error')
     }
   }
 

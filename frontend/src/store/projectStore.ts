@@ -39,6 +39,13 @@ interface ScanProgress {
   totalOcrFrames: number
 }
 
+export interface Notification {
+  id: string
+  message: string
+  type: 'error' | 'info' | 'success'
+  timestamp: number
+}
+
 interface ProjectStore {
   // ── Active project ──────────────────────────────────────────────────────────
 
@@ -162,6 +169,12 @@ interface ProjectStore {
   updateScanProgress: (event: ScanProgressEvent) => void
   /** Reset scan progress to idle state (before or after a scan). */
   resetScanProgress: () => void
+
+  // ── Notifications ──────────────────────────────────────────────────────────
+
+  notifications: Notification[]
+  addNotification: (message: string, type: Notification['type']) => void
+  dismissNotification: (id: string) => void
 }
 
 const DEFAULT_SCAN_PROGRESS: ScanProgress = {
@@ -333,4 +346,19 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     }),
 
   resetScanProgress: () => set({ scanProgress: DEFAULT_SCAN_PROGRESS }),
+
+  // ── Notifications ──────────────────────────────────────────────────────────
+
+  notifications: [],
+  addNotification: (message, type) =>
+    set((state) => ({
+      notifications: [
+        ...state.notifications,
+        { id: crypto.randomUUID(), message, type, timestamp: Date.now() },
+      ],
+    })),
+  dismissNotification: (id) =>
+    set((state) => ({
+      notifications: state.notifications.filter((n) => n.id !== id),
+    })),
 }))

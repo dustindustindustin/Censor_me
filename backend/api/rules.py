@@ -1,15 +1,18 @@
 """Rules management API."""
 
+import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from backend.config import PROJECTS_DIR
-from backend.models.rules import Rule, RuleSet
+from backend.models.rules import Rule, RuleSet, RuleUpdate
 
 MAX_PATTERN_LEN = 500
 MAX_SAMPLE_LEN = 10_000
@@ -17,6 +20,8 @@ MAX_SAMPLE_LEN = 10_000
 router = APIRouter()
 
 _log = logging.getLogger(__name__)
+
+_rules_lock = asyncio.Lock()
 
 
 def _rules_file() -> Path:
@@ -36,7 +41,16 @@ def _load_custom_rules() -> list[Rule]:
 
 def _save_custom_rules() -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-    _rules_file().write_text(json.dumps([r.model_dump() for r in _custom_rules], indent=2))
+    dest = _rules_file()
+    fd, tmp = tempfile.mkstemp(dir=str(PROJECTS_DIR), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump([r.model_dump() for r in _custom_rules], f, indent=2)
+        os.replace(tmp, str(dest))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 # Default built-in rules (shipped with app)
@@ -159,8 +173,9 @@ async def get_rules() -> dict:
 @router.post("/custom")
 async def add_custom_rule(rule: Rule) -> dict:
     """Add a custom rule."""
-    _custom_rules.append(rule)
-    _save_custom_rules()
+    async with _rules_lock:
+        _custom_rules.append(rule)
+        _save_custom_rules()
     return {"added": rule.rule_id}
 
 
@@ -168,24 +183,26 @@ async def add_custom_rule(rule: Rule) -> dict:
 async def delete_custom_rule(rule_id: str) -> dict:
     """Delete a custom rule by ID."""
     global _custom_rules
-    before = len(_custom_rules)
-    _custom_rules = [r for r in _custom_rules if r.rule_id != rule_id]
-    if len(_custom_rules) == before:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    _save_custom_rules()
+    async with _rules_lock:
+        before = len(_custom_rules)
+        _custom_rules = [r for r in _custom_rules if r.rule_id != rule_id]
+        if len(_custom_rules) == before:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        _save_custom_rules()
     return {"deleted": rule_id}
 
 
 @router.patch("/custom/{rule_id}")
-async def update_custom_rule(rule_id: str, body: dict) -> dict:
+async def update_custom_rule(rule_id: str, body: RuleUpdate) -> dict:
     """Patch a custom rule (e.g. toggle enabled, update name/pattern)."""
-    for i, rule in enumerate(_custom_rules):
-        if rule.rule_id == rule_id:
-            merged = rule.model_dump() | {k: v for k, v in body.items() if k != "rule_id"}
-            updated = Rule.model_validate(merged)
-            _custom_rules[i] = updated
-            _save_custom_rules()
-            return updated.model_dump()
+    async with _rules_lock:
+        for i, rule in enumerate(_custom_rules):
+            if rule.rule_id == rule_id:
+                merged = rule.model_dump() | body.model_dump(exclude_unset=True)
+                updated = Rule.model_validate(merged)
+                _custom_rules[i] = updated
+                _save_custom_rules()
+                return updated.model_dump()
     raise HTTPException(status_code=404, detail="Rule not found")
 
 

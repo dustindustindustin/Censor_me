@@ -156,6 +156,9 @@ class ScanOrchestrator:
 
         cap = cv2.VideoCapture(str(video_path))
         fps = cap.get(cv2.CAP_PROP_FPS) or metadata.fps
+        if not fps or fps <= 0:
+            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+            fps = 30.0
 
         for frame_idx in frame_indices:
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)

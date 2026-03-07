@@ -109,6 +109,7 @@ class PiiClassifier:
         self._entity_overrides = entity_confidence_overrides or {}
         # Populated via set_custom_rules(); empty until rules are loaded.
         self._custom_rules: list[dict] = []
+        self._warned_rules: set[str] = set()
 
     def _get_analyzer(self):
         """
@@ -265,14 +266,21 @@ class PiiClassifier:
             if rule_confidence < threshold:
                 continue
 
+            rule_id = rule.get("rule_id", pattern)
             if len(pattern) > 500:
-                continue  # Silently skip oversized patterns (ReDoS guard)
+                if rule_id not in self._warned_rules:
+                    self._warned_rules.add(rule_id)
+                    logger.warning("Skipping rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)
+                continue
 
             for box in ocr_results:
                 try:
                     matches = list(re.finditer(pattern, box.text, re.IGNORECASE))
-                except re.error:
-                    continue  # Silently skip malformed regex patterns
+                except re.error as exc:
+                    if rule_id not in self._warned_rules:
+                        self._warned_rules.add(rule_id)
+                        logger.warning("Skipping rule %r: malformed regex: %s", rule_id, exc)
+                    continue
 
                 for match in matches:
                     candidates.append(PiiCandidate(

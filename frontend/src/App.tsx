@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Plus, Settings, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
 import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
+import { ToastContainer } from './components/ToastContainer'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
 import { Inspector } from './components/Inspector/Inspector'
 import { SettingsModal } from './components/Settings/SettingsModal'
@@ -145,6 +146,8 @@ export default function App() {
         <VideoPreview videoRef={videoRef} style={{ flex: 1, minWidth: 0 }} />
         <Inspector style={{ width: 300, flexShrink: 0 }} />
       </div>
+
+      <ToastContainer />
 
       {showSettings && (
         <SettingsModal

@@ -6,7 +6,7 @@
  * accept/reject individual findings.
  */
 
-import { useMemo, useState } from 'react'
+import React, { useCallback, useMemo, useState } from 'react'
 import { CircleDot, FilterX } from 'lucide-react'
 import { bulkUpdateEventStatus, updateEventStatus } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
@@ -59,11 +59,11 @@ export function FindingsPanel({ style }: Props) {
     [events, filterType, filterStatus, sortBy],
   )
 
-  const handleStatus = async (e: RedactionEvent, status: EventStatus) => {
+  const handleStatus = useCallback(async (e: RedactionEvent, status: EventStatus) => {
     if (!project) return
     updateLocal(e.event_id, status)
     await updateEventStatus(project.project_id, e.event_id, status)
-  }
+  }, [project, updateLocal])
 
   const handleAcceptAll = async () => {
     if (!project) return
@@ -189,7 +189,7 @@ interface FindingItemProps {
   onReject: () => void
 }
 
-function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingItemProps) {
+const FindingItem = React.memo(function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingItemProps) {
   const startMs = event.time_ranges[0]?.start_ms ?? 0
   const endMs = event.time_ranges[event.time_ranges.length - 1]?.end_ms ?? 0
 
@@ -247,4 +247,4 @@ function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingI
       )}
     </div>
   )
-}
+})
