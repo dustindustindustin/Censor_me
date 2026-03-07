@@ -8,27 +8,24 @@ GET  /export/{project_id}/report    — audit report (json or html)
 """
 
 import asyncio
-import os
+import logging
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
+from backend.config import PROJECTS_DIR, project_dir
 from backend.models.project import OutputSettings, ProjectFile
 from backend.services.redaction_renderer import RedactionRenderer
 from backend.services.report_service import ReportService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # In-memory export progress registry
 _active_exports: dict[str, dict] = {}
-
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
-
-
-def _project_dir(project_id: str) -> Path:
-    return PROJECTS_DIR / project_id
 
 
 @router.post("/{project_id}")
@@ -41,11 +38,11 @@ async def start_export(
     Start exporting a redacted video in the background.
     Returns an export_id — connect to WS /export/progress/{export_id} for progress.
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video in project")
 
@@ -70,7 +67,7 @@ async def start_export(
     }
 
     asyncio.create_task(
-        _run_export(export_id, project, project_dir, accepted_events, gpu_available)
+        _run_export(export_id, project, proj_dir, accepted_events, gpu_available)
     )
 
     return {"export_id": export_id, "status": "running"}
@@ -129,8 +126,8 @@ async def get_export_status(project_id: str, export_id: str):
 @router.get("/{project_id}/download")
 async def download_export(project_id: str):
     """Download the most recent exported video for a project."""
-    project_dir = _project_dir(project_id)
-    exports_dir = project_dir / "exports"
+    proj_dir = project_dir(project_id)
+    exports_dir = proj_dir / "exports"
 
     if not exports_dir.exists():
         raise HTTPException(status_code=404, detail="No exports found")
@@ -145,11 +142,11 @@ async def download_export(project_id: str):
 @router.get("/{project_id}/report")
 async def get_report(project_id: str, format: str = "json"):
     """Generate and return an audit report (json or html)."""
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     svc = ReportService()
 
     if format == "html":
@@ -160,7 +157,7 @@ async def get_report(project_id: str, format: str = "json"):
 async def _run_export(
     export_id: str,
     project: ProjectFile,
-    project_dir: Path,
+    proj_dir: Path,
     accepted_events: list,
     gpu_available: bool,
 ) -> None:
@@ -185,12 +182,13 @@ async def _run_export(
             source_video=source_video,
             events=accepted_events,
             output_settings=project.output_settings,
-            output_dir=project_dir / "exports",
+            output_dir=proj_dir / "exports",
             gpu_available=gpu_available,
             on_progress=on_progress,
         )
         export["status"] = "done"
         export["output_path"] = str(output_path)
     except Exception as e:
+        logger.exception("Export %s failed: %s", export_id, e)
         export["status"] = "error"
         export["error"] = str(e)

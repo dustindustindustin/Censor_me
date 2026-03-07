@@ -33,6 +33,6 @@ echo Remove that line in this file to pre-load models at startup instead.
 echo.
 
 set SKIP_MODEL_INIT=1
-"%ROOT%\.venv\Scripts\uvicorn.exe" backend.main:app --reload --port 8010 --host 127.0.0.1 --log-level debug
+"%ROOT%\.venv\Scripts\uvicorn.exe" backend.main:app --reload --reload-exclude ".venv" --port 8010 --host 127.0.0.1 --log-level debug
 
 pause

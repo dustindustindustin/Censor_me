@@ -132,8 +132,8 @@ class OcrService:
         try:
             import torch
             torch.cuda.empty_cache()
-        except Exception:
-            pass  # Non-fatal; if torch isn't importable here, GPU wasn't used
+        except (ImportError, RuntimeError):
+            pass  # Non-fatal; torch not available or CUDA not initialized
 
     def _run_ocr(self, frame: np.ndarray, scale_factor: float = 1.0) -> list[BoxResult]:
         """

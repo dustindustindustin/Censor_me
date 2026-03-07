@@ -8,8 +8,8 @@ GET  /scan/status/{scan_id}      — poll status (alternative to WebSocket)
 
 import asyncio
 import logging
-import os
 import uuid
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from backend.api.rules import get_all_rules
+from backend.config import PROJECTS_DIR, get_project_lock, project_dir
 from backend.models.project import ProjectFile
 from backend.services.scan_orchestrator import ScanOrchestrator
 
@@ -31,43 +32,40 @@ _active_scans: dict[str, dict] = {}
 # Used to prevent duplicate scans and to reconnect clients that navigated away.
 _scanning_projects: dict[str, str] = {}
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
-
-
-def _project_dir(project_id: str) -> Path:
-    return PROJECTS_DIR / project_id
+# Protects _scanning_projects check-and-set to prevent duplicate scans.
+_scan_lock = asyncio.Lock()
 
 
 @router.post("/start/{project_id}")
 async def start_scan(project_id: str, request: Request):
     """Kick off a scan for the given project. Returns a scan_id to track progress."""
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
-    if project_id in _scanning_projects:
-        # A scan is already running — return the existing scan_id so the client
-        # can reconnect to the WebSocket and catch up on buffered progress events.
-        existing_scan_id = _scanning_projects[project_id]
-        return {"scan_id": existing_scan_id, "resumed": True}
+    # Atomic check-and-register to prevent duplicate scans
+    async with _scan_lock:
+        if project_id in _scanning_projects:
+            existing_scan_id = _scanning_projects[project_id]
+            return {"scan_id": existing_scan_id, "resumed": True}
 
-    # Read GPU availability from app state (set during startup)
-    gpu_info = getattr(request.app.state, "gpu", None)
-    use_gpu = gpu_info.cuda_available if gpu_info else False
+        # Read GPU availability from app state (set during startup)
+        gpu_info = getattr(request.app.state, "gpu", None)
+        use_gpu = gpu_info.cuda_available if gpu_info else False
 
-    scan_id = str(uuid.uuid4())
-    _active_scans[scan_id] = {
-        "project_id": project_id,
-        "status": "queued",
-        "progress": [],
-    }
-    _scanning_projects[project_id] = scan_id
+        scan_id = str(uuid.uuid4())
+        _active_scans[scan_id] = {
+            "project_id": project_id,
+            "status": "queued",
+            "progress": deque(maxlen=500),
+        }
+        _scanning_projects[project_id] = scan_id
 
-    asyncio.create_task(_run_scan(scan_id, project, project_dir, use_gpu))
+    asyncio.create_task(_run_scan(scan_id, project, proj_dir, use_gpu))
 
     return {"scan_id": scan_id, "resumed": False}
 
@@ -90,16 +88,23 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
 
     try:
         while scan["status"] not in ("done", "error"):
-            events = scan["progress"]
-            if len(events) > last_sent:
-                for event in events[last_sent:]:
-                    await websocket.send_json(event)
-                last_sent = len(events)
+            progress = scan["progress"]
+            current_len = len(progress)
+            # If the bounded deque evicted items, reset to avoid stale indices
+            if last_sent > current_len:
+                last_sent = 0
+            if current_len > last_sent:
+                for i in range(last_sent, current_len):
+                    await websocket.send_json(progress[i])
+                last_sent = current_len
             await asyncio.sleep(0.1)
 
         # Flush remaining events
-        for event in scan["progress"][last_sent:]:
-            await websocket.send_json(event)
+        progress = scan["progress"]
+        if last_sent > len(progress):
+            last_sent = 0
+        for i in range(last_sent, len(progress)):
+            await websocket.send_json(progress[i])
 
         await websocket.send_json({"stage": "done", "status": scan["status"]})
 
@@ -156,11 +161,11 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
     Query params:
         frame_index: Which frame to sample (default: 0). Try 30, 60, 90, etc.
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
@@ -228,8 +233,9 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
                     skip_reason = f"entity type '{r.entity_type}' not in type map"
                 elif r.entity_type == "PERSON" and len(matched) < _PERSON_MIN_CHARS:
                     skip_reason = f"PERSON too short ({len(matched)} < {_PERSON_MIN_CHARS} chars)"
-                elif r.score < threshold:
-                    skip_reason = f"confidence {r.score:.2f} < threshold {threshold:.2f}"
+                elif r.score < (project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold):
+                    effective = project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold
+                    skip_reason = f"confidence {r.score:.2f} < threshold {effective:.2f}"
                 else:
                     skip_reason = None
 
@@ -245,7 +251,10 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
             # Pass 2: run through actual classifier (Presidio + regex rules) for the
             # authoritative candidate list — same code path as the real scan.
             rules = [r.model_dump() for r in get_all_rules()]
-            classifier = PiiClassifier(confidence_threshold=threshold)
+            classifier = PiiClassifier(
+                confidence_threshold=threshold,
+                entity_confidence_overrides=project.scan_settings.entity_confidence_overrides,
+            )
             classifier.set_custom_rules(rules)
             classifier_candidates = [
                 {
@@ -307,11 +316,11 @@ async def track_manual_event(project_id: str, event_id: str, static: bool = Fals
     from backend.models.events import TimeRange
     from backend.services.tracker_service import TrackerService
 
-    project_dir = PROJECTS_DIR / project_id
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video in project")
 
@@ -336,11 +345,13 @@ async def track_manual_event(project_id: str, event_id: str, static: bool = Fals
         event = await asyncio.to_thread(tracker.track_backward, event, str(video_path), fps)
 
     # Persist the updated event
-    for i, e in enumerate(project.events):
-        if e.event_id == event_id:
-            project.events[i] = event
-            break
-    project.save(project_dir)
+    async with get_project_lock(project_id):
+        fresh = ProjectFile.load(proj_dir)
+        for i, e in enumerate(fresh.events):
+            if e.event_id == event_id:
+                fresh.events[i] = event
+                break
+        fresh.save(proj_dir)
 
     return event.model_dump()
 
@@ -365,11 +376,11 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
     from backend.services.pii_classifier import PiiClassifier
     from backend.services.tracker_service import TrackerService
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
@@ -399,7 +410,10 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
         ocr_results = ocr.process_frame(frame)
 
         rules = [r.model_dump() for r in get_all_rules()]
-        classifier = PiiClassifier(confidence_threshold=project.scan_settings.confidence_threshold)
+        classifier = PiiClassifier(
+            confidence_threshold=project.scan_settings.confidence_threshold,
+            entity_confidence_overrides=project.scan_settings.entity_confidence_overrides,
+        )
         classifier.set_custom_rules(rules)
         candidates = classifier.classify(ocr_results, safe_idx, time_ms)
 
@@ -428,9 +442,10 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
     new_events, _fps = await asyncio.to_thread(_run)
 
     # Reload before appending to avoid clobbering any concurrent writes
-    fresh = ProjectFile.load(project_dir)
-    fresh.events.extend(new_events)
-    fresh.save(project_dir)
+    async with get_project_lock(project_id):
+        fresh = ProjectFile.load(proj_dir)
+        fresh.events.extend(new_events)
+        fresh.save(proj_dir)
 
     return {
         "events": [e.model_dump() for e in new_events],
@@ -450,35 +465,36 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
 
     Returns a scan_id immediately. Connect to WS /scan/progress/{scan_id} for progress.
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.video:
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
-    if project_id in _scanning_projects:
-        existing_scan_id = _scanning_projects[project_id]
-        return {"scan_id": existing_scan_id, "resumed": True}
+    async with _scan_lock:
+        if project_id in _scanning_projects:
+            existing_scan_id = _scanning_projects[project_id]
+            return {"scan_id": existing_scan_id, "resumed": True}
 
-    fps = project.video.fps
-    start_frame = int((start_ms / 1000) * fps)
-    end_frame = int((end_ms / 1000) * fps)
+        fps = project.video.fps
+        start_frame = int((start_ms / 1000) * fps)
+        end_frame = int((end_ms / 1000) * fps)
 
-    gpu_info = getattr(request.app.state, "gpu", None)
-    use_gpu = gpu_info.cuda_available if gpu_info else False
+        gpu_info = getattr(request.app.state, "gpu", None)
+        use_gpu = gpu_info.cuda_available if gpu_info else False
 
-    scan_id = str(uuid.uuid4())
-    _active_scans[scan_id] = {
-        "project_id": project_id,
-        "status": "queued",
-        "progress": [],
-    }
-    _scanning_projects[project_id] = scan_id
+        scan_id = str(uuid.uuid4())
+        _active_scans[scan_id] = {
+            "project_id": project_id,
+            "status": "queued",
+            "progress": deque(maxlen=500),
+        }
+        _scanning_projects[project_id] = scan_id
 
     asyncio.create_task(
-        _run_range_scan(scan_id, project, project_dir, use_gpu, start_frame, end_frame)
+        _run_range_scan(scan_id, project, proj_dir, use_gpu, start_frame, end_frame)
     )
 
     return {"scan_id": scan_id, "resumed": False}
@@ -487,7 +503,7 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
 async def _run_range_scan(
     scan_id: str,
     project: ProjectFile,
-    project_dir: Path,
+    proj_dir: Path,
     use_gpu: bool,
     start_frame: int,
     end_frame: int,
@@ -502,15 +518,16 @@ async def _run_range_scan(
     try:
         rules = [r.model_dump() for r in get_all_rules()]
         orchestrator = ScanOrchestrator(
-            project, project_dir, emit, use_gpu=use_gpu, rules=rules,
+            project, proj_dir, emit, use_gpu=use_gpu, rules=rules,
             frame_range=(start_frame, end_frame),
         )
         new_events = await orchestrator.run()
 
         # Reload project and append (preserves events outside the scanned range)
-        fresh = ProjectFile.load(project_dir)
-        fresh.events.extend(new_events)
-        fresh.save(project_dir)
+        async with get_project_lock(scan["project_id"]):
+            fresh = ProjectFile.load(proj_dir)
+            fresh.events.extend(new_events)
+            fresh.save(proj_dir)
 
         scan["status"] = "done"
         emit({"stage": "done", "total_findings": len(new_events)})
@@ -526,7 +543,7 @@ async def _run_range_scan(
 async def _run_scan(
     scan_id: str,
     project: ProjectFile,
-    project_dir: Path,
+    proj_dir: Path,
     use_gpu: bool,
 ) -> None:
     """Execute the full detection pipeline and push progress events."""
@@ -538,12 +555,13 @@ async def _run_scan(
 
     try:
         rules = [r.model_dump() for r in get_all_rules()]
-        orchestrator = ScanOrchestrator(project, project_dir, emit, use_gpu=use_gpu, rules=rules)
+        orchestrator = ScanOrchestrator(project, proj_dir, emit, use_gpu=use_gpu, rules=rules)
         events = await orchestrator.run()
 
         # Save results to project
-        project.events = events
-        project.save(project_dir)
+        async with get_project_lock(scan["project_id"]):
+            project.events = events
+            project.save(proj_dir)
 
         scan["status"] = "done"
         emit({"stage": "done", "total_findings": len(events)})

@@ -92,14 +92,21 @@ class PiiClassifier:
     threshold, ready to be consumed by ``EventLinker``.
     """
 
-    def __init__(self, confidence_threshold: float = 0.5) -> None:
+    def __init__(
+        self,
+        confidence_threshold: float = 0.5,
+        entity_confidence_overrides: dict[str, float] | None = None,
+    ) -> None:
         """
         Args:
             confidence_threshold: Minimum Presidio score to include a result.
                 Values below this are silently dropped. Range [0.0, 1.0].
+            entity_confidence_overrides: Per-PII-type thresholds that override
+                the global threshold for specific entity types.
         """
         self._analyzer = None  # Lazy-loaded on first classify() call
         self._threshold = confidence_threshold
+        self._entity_overrides = entity_confidence_overrides or {}
         # Populated via set_custom_rules(); empty until rules are loaded.
         self._custom_rules: list[dict] = []
 
@@ -191,7 +198,7 @@ class PiiClassifier:
                 text=composite,
                 language="en",
             )
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             logger.warning("Presidio analysis failed on frame %d: %s", frame_index, e)
             results = []
 
@@ -200,9 +207,6 @@ class PiiClassifier:
                      [(r.entity_type, round(r.score, 2), composite[r.start:r.end]) for r in results])
 
         for result in results:
-            if result.score < self._threshold:
-                continue
-
             # Only keep entity types explicitly in the map — drop everything else
             # (DATE_TIME, LOCATION, URL, NRP, and any future Presidio additions).
             pii_type = _PRESIDIO_TYPE_MAP.get(result.entity_type)
@@ -211,6 +215,12 @@ class PiiClassifier:
                     "Skipping entity type %r (not in type map) on frame %d",
                     result.entity_type, frame_index,
                 )
+                continue
+
+            # Per-type confidence threshold: look up by PiiType value,
+            # fall back to global threshold if no override is configured.
+            threshold = self._entity_overrides.get(pii_type.value, self._threshold)
+            if result.score < threshold:
                 continue
 
             matched_text = composite[result.start:result.end].strip()
@@ -244,14 +254,16 @@ class PiiClassifier:
             label = rule.get("label", "custom")
             rule_confidence = float(rule.get("confidence", 0.9))
 
-            if rule_confidence < self._threshold:
-                continue
-
             # Map the rule's label string to our PiiType enum
             try:
                 pii_type = PiiType(label) if label in PiiType._value2member_map_ else PiiType.CUSTOM
             except (ValueError, AttributeError):
                 pii_type = PiiType.CUSTOM
+
+            # Per-type threshold for custom rules
+            threshold = self._entity_overrides.get(pii_type.value, self._threshold)
+            if rule_confidence < threshold:
+                continue
 
             if len(pattern) > 500:
                 continue  # Silently skip oversized patterns (ReDoS guard)

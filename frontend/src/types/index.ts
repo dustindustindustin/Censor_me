@@ -21,7 +21,8 @@
 export type PiiType =
   | 'phone' | 'email' | 'person' | 'address'
   | 'credit_card' | 'ssn' | 'account_id' | 'employee_id'
-  | 'postal_code' | 'username' | 'custom' | 'manual' | 'unknown'
+  | 'postal_code' | 'username' | 'face'
+  | 'custom' | 'manual' | 'unknown'
 
 /**
  * The algorithm used to track a bounding box between OCR keyframes.
@@ -189,6 +190,8 @@ export interface ScanSettings {
   ocr_sample_interval: number
   ocr_resolution_scale: number
   confidence_threshold: number
+  entity_confidence_overrides: Record<string, number>
+  detect_faces: boolean
   secure_mode: boolean
   default_redaction_style: RedactionStyle
 }

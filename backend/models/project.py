@@ -127,6 +127,29 @@ class ScanSettings(BaseModel):
             "0.35 is recommended — Presidio phone/email recognizers often score 0.4–0.5."
         )
     )
+    entity_confidence_overrides: dict[str, float] = Field(
+        default_factory=lambda: {
+            "phone": 0.35,
+            "email": 0.35,
+            "person": 0.50,
+            "ssn": 0.35,
+            "credit_card": 0.35,
+            "account_id": 0.35,
+            "face": 0.40,
+        },
+        description=(
+            "Per-PII-type confidence thresholds. Overrides the global "
+            "confidence_threshold for specific entity types. Types not listed "
+            "here fall back to the global threshold."
+        )
+    )
+    detect_faces: bool = Field(
+        default=True,
+        description=(
+            "When True, run face detection on each sampled frame in addition "
+            "to OCR. Catches webcam overlays and profile pictures."
+        )
+    )
     secure_mode: bool = Field(
         default=True,
         description=(

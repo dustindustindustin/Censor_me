@@ -18,6 +18,7 @@
 
 import { useRef } from 'react'
 import { useProjectStore } from '../../store/projectStore'
+import { formatMs } from '../../utils/format'
 
 /** Props for the Timeline component. */
 interface Props {
@@ -204,22 +205,4 @@ export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint 
       </div>
     </div>
   )
-}
-
-/**
- * Format a millisecond timestamp as a human-readable time string.
- *
- * @param ms - Time in milliseconds.
- * @returns Formatted string: "M:SS" for under an hour, "H:MM:SS" for longer.
- *
- * @example
- * formatMs(75000)  // "1:15"
- * formatMs(3665000) // "1:01:05"
- */
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  const m = Math.floor(s / 60)
-  const h = Math.floor(m / 60)
-  if (h > 0) return `${h}:${String(m % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-  return `${m}:${String(s % 60).padStart(2, '0')}`
 }

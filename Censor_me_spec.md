@@ -1,8 +1,8 @@
 # Censor Me — Product & Technical Specification
 
 Product Name: Censor Me
-Version: v1.0 (Draft)
-Status: Draft
+Version: v0.2 (Active Development)
+Status: Active
 
 ---
 
@@ -124,13 +124,13 @@ The pipeline is divided into seven discrete, independently testable stages:
 - Detect scene changes (histogram diff or PySceneDetect) and increase sampling rate around transitions.
 
 **Stage 2: OCR**
-- Run PaddleOCR on sampled frames.
+- Run EasyOCR on sampled frames.
 - Output per frame: list of `{bbox, text, confidence}` results.
 - Apply CLAHE contrast enhancement pre-OCR for dark-mode / low-contrast frames.
 - Multi-scale retry (1.0x then 1.5x) for small fonts.
 
 **Stage 3: Classify**
-- Run Microsoft Presidio (local) + spaCy `en_core_web_sm` against OCR text results.
+- Run Microsoft Presidio (local) + spaCy `en_core_web_lg` against OCR text results.
 - Apply custom regex rules and allowlist/denylist.
 - Output: `{text, pii_type, confidence, source_frame, bbox}` candidates.
 
@@ -177,7 +177,7 @@ The frontend updates timeline markers in real-time as findings are streamed.
 
 ### 5.1 Automatic Detection
 
-- OCR-based detection of on-screen text via PaddleOCR.
+- OCR-based detection of on-screen text via EasyOCR.
 - PII rules engine:
   - Regex templates shipped with app (via Presidio).
   - Custom regex per workspace (JSON/YAML rule files).
@@ -200,7 +200,7 @@ The frontend updates timeline markers in real-time as findings are streamed.
 
 - **Proxy editing**: UI uses 720p proxy video; redactions render on full-res at export.
 - **Chunked processing**: process in 30-second segments for long clips.
-- **GPU utilization**: PaddleOCR and segmentation on GPU (CUDA); ffmpeg NVENC for encoding.
+- **GPU utilization**: EasyOCR on GPU (CUDA); ffmpeg NVENC for encoding.
 - **Adaptive knobs**: OCR sample rate, OCR resolution scaling, tracking mode, proxy resolution.
 
 ---
@@ -310,8 +310,8 @@ Both auto-detected and manually-added regions use the same `RedactionEvent` sche
 | UI Framework | FastAPI (Python) + React + TypeScript | Fastest iteration; best ecosystem for video timeline UI |
 | Python Package Manager | uv | Fast, modern, reproducible |
 | Node Package Manager | pnpm | Fast, efficient |
-| OCR | PaddleOCR | Outperforms Tesseract on modern UI text; GPU-first |
-| PII Detection | Microsoft Presidio (local) + spaCy `en_core_web_sm` | Wraps regex + NER; avoids reimplementing rules engine |
+| OCR | EasyOCR | PyTorch-based; GPU auto-detected via CUDA; good accuracy on UI text |
+| PII Detection | Microsoft Presidio (local) + spaCy `en_core_web_lg` | Wraps regex + NER; avoids reimplementing rules engine |
 | Video I/O | ffmpeg-python + system ffmpeg | Thin wrapper; leverages NVENC natively |
 | CV Tracking | OpenCV CSRT (v0.1), SAM2 (v1.0+) | CSRT is fast and requires no GPU |
 | Scene Detection | PySceneDetect or histogram diff | Lightweight; triggers adaptive OCR |
@@ -327,7 +327,7 @@ Both auto-detected and manually-added regions use the same `RedactionEvent` sche
 |---|---|
 | `VideoService` | Decode/encode via ffmpeg; proxy generation |
 | `FrameSampler` | Adaptive sampling logic, scene change detection |
-| `OcrService` | PaddleOCR wrapper; returns `BoxResult` list per frame |
+| `OcrService` | EasyOCR wrapper; returns `BoxResult` list per frame |
 | `PiiClassifier` | Presidio + custom regex rules; returns PII candidates |
 | `EventLinker` | Groups frame-level detections into time-linked `RedactionEvent` objects |
 | `TrackerService` | OpenCV CSRT tracking between OCR keyframes; drift detection |
@@ -361,8 +361,8 @@ On launch, the backend performs the following checks before accepting requests:
 
 1. Detect GPU/CUDA availability → log result and expose via `GET /system/status`.
 2. Verify ffmpeg is on PATH → surface error to UI with download guidance if missing.
-3. Initialize PaddleOCR models (auto-download on first run; expose download progress via API).
-4. Initialize Presidio + spaCy `en_core_web_sm` (auto-download on first run).
+3. Initialize EasyOCR models (auto-download on first run, ~100 MB).
+4. Initialize Presidio + spaCy `en_core_web_lg` (auto-download on first run).
 5. Report ready status → frontend shows "New Project / Open Project" screen.
 
 The frontend polls `GET /system/status` until backend reports ready, showing a loading screen during model initialization.
@@ -469,53 +469,61 @@ For 1080p screen recording, 10 minutes:
 
 ## 14. Milestones
 
-### v0.1 — Core MVP (2–4 weeks)
+### v0.1 — Core MVP (COMPLETE)
 
-| # | Feature |
+| # | Feature | Status |
+|---|---|---|
+| 1 | Import MP4/MOV/MKV (auto-detect metadata via ffprobe) | Done |
+| 2 | Proxy generation (720p, stored in `.proxy/`) | Done |
+| 3 | Video preview + seekable timeline | Done |
+| 4 | OCR scan with real-time WebSocket progress | Done |
+| 5 | Regex PII detection — phone + email (via Presidio) | Done |
+| 6 | Temporal event linking | Done |
+| 7 | BBox tracking (CSRT) | Done |
+| 8 | Findings panel — list, accept/reject, jump to timestamp | Done |
+| 9 | Blur redaction (Gaussian) | Done |
+| 10 | Export H.264 (NVENC if available) | Done |
+| 11 | Save/load project (JSON) | Done |
+| 12 | Keyboard shortcuts (Space, A, R, J/K/L) | Done |
+
+### v0.2 — Hybrid Power (IN PROGRESS)
+
+| Feature | Status |
 |---|---|
-| 1 | Import MP4/MOV/MKV (auto-detect metadata via ffprobe) |
-| 2 | Proxy generation (720p, stored in `.proxy/`) |
-| 3 | Video preview + seekable timeline |
-| 4 | OCR scan with real-time WebSocket progress |
-| 5 | Regex PII detection — phone + email (via Presidio) |
-| 6 | Temporal event linking |
-| 7 | BBox tracking (CSRT) |
-| 8 | Findings panel — list, accept/reject, jump to timestamp |
-| 9 | Blur redaction (Gaussian) |
-| 10 | Export H.264 (NVENC if available) |
-| 11 | Save/load project (JSON) |
-| 12 | Keyboard shortcuts (Space, A, R, J/K/L) |
-
-### v0.2 — Hybrid Power
-
-- Manual region redact (rectangle draw) + tracking
-- Solid box and pixelate redaction styles
-- Rescan selection range
-- Custom regex rules UI
-- Undo/Redo for all edits
+| Manual region redact (rectangle draw) + tracking | Done |
+| Solid box and pixelate redaction styles | Done |
+| Rescan selection range | Backend API done, UI pending |
+| Custom regex rules UI | Backend API done, frontend UI pending |
+| Undo/Redo for all edits | Not started |
 
 ### v0.3 — Robustness
 
-- Context rules (field-label adjacency)
-- NER suggestions for person names
-- Drift detection and tracker reinitialize
-- Batch mode
-- Polygon draw (advanced manual regions)
+| Feature | Status |
+|---|---|
+| NER suggestions for person names | Done (implemented early) |
+| Drift detection and tracker reinitialize | Done (implemented early) |
+| Scene-change detection + adaptive sampling | Done (implemented early) |
+| Face detection (OpenCV DNN) | Done (implemented early) |
+| Context rules (field-label adjacency) | Model support exists, logic pending |
+| Batch mode | Not started |
+| Polygon draw (advanced manual regions) | Not started |
 
 ### v1.0 — Production
 
-- Role-based presets
-- Audit report output (JSON + HTML)
-- Segmentation tracking (SAM2) for difficult cases
-- Packaging: Windows installer; macOS `.app` bundle
-- GPU diagnostics screen
-- Telemetry: OFF by default
+| Feature | Status |
+|---|---|
+| Audit report output (JSON + HTML) | Done (implemented early) |
+| Role-based presets | Not started |
+| Segmentation tracking (SAM2) for difficult cases | Not started (enum defined) |
+| Packaging: Windows installer; macOS `.app` bundle | Not started |
+| GPU diagnostics screen | Backend status endpoint exists, dedicated UI pending |
+| Telemetry: OFF by default | N/A (no telemetry code) |
 
 ---
 
 ## 15. Implementation Notes
 
-- Use **PaddleOCR** for screen text — outperforms Tesseract on modern UI; handles varied fonts and sizes.
+- Use **EasyOCR** for screen text — PyTorch-based, GPU auto-detected via CUDA, handles varied fonts and sizes.
 - Use **Microsoft Presidio (local)** for PII detection — ships with regex patterns for all common PII types and integrates spaCy NER without reimplementing.
 - Use **ffmpeg + NVENC** for export on NVIDIA hardware to keep rendering fast.
 - Start with **CSRT bbox tracking**; add SAM2 segmentation tracking in v1.0 for "hard cases".

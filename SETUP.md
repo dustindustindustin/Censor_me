@@ -60,7 +60,7 @@ cp .env.example .env
 **Terminal 1 — Backend:**
 ```bash
 cd "path/to/Censor_me"
-SKIP_MODEL_INIT=1 .venv/Scripts/uvicorn backend.main:app --reload --port 8010 --reload-exclude ".venv"
+SKIP_MODEL_INIT=1 .venv/Scripts/uvicorn backend.main:app --reload --reload-exclude ".venv" --port 8010 --host 127.0.0.1
 ```
 
 > `SKIP_MODEL_INIT=1` skips model warm-up for fast startup during development.
@@ -76,11 +76,11 @@ Open **http://localhost:5173** in your browser.
 
 ---
 
-## v0.1 MVP Workflow
+## Workflow
 
 1. Open http://localhost:5173
 2. Click **+ New Project**
-3. Click **Import Video** — select an MP4, MOV, or MKV file
+3. Click **Import Video** — select a video file (MP4, MOV, MKV, AVI, WebM)
 4. Wait for proxy generation (shown in the toolbar)
 5. Click **Scan** — findings stream onto the timeline in real-time
 6. Review findings in the left panel (keyboard: **A** = Accept, **R** = Reject)
@@ -95,7 +95,7 @@ The app uses **EasyOCR** (PyTorch-based) for text detection:
 - GPU is auto-detected via CUDA — no manual configuration needed
 - First scan downloads OCR models (~100 MB) if not cached
 - GPU mode is ~5x faster than CPU mode for OCR
-- Your RTX A4500 Laptop GPU will be used automatically
+- Compatible NVIDIA GPUs will be used automatically
 
 ---
 
@@ -110,19 +110,24 @@ If NVENC fails for any reason, the app falls back to CPU (libx264) automatically
 ## Project Structure
 
 ```
-censor_me/
+Censor_me/
 ├── backend/
 │   ├── main.py              # FastAPI entry point
+│   ├── config.py            # Project paths, locks
 │   ├── api/                 # REST + WebSocket endpoints
-│   ├── services/            # Pipeline: OCR, PII, tracking, rendering
+│   ├── config.py            # Project paths, locks
+│   ├── services/            # Pipeline: OCR, PII, tracking, rendering, face detection
 │   ├── models/              # Pydantic data models
 │   └── utils/               # GPU detection, scene detection, startup
 ├── frontend/
 │   └── src/
-│       ├── components/      # FindingsPanel, VideoPreview, Inspector
-│       ├── hooks/           # useScanProgress, useKeyboard
+│       ├── components/      # FindingsPanel, VideoPreview, Inspector, Settings, ErrorBoundary
+│       ├── hooks/           # useScanProgress, useExportProgress, useKeyboard
 │       ├── store/           # Zustand project state
-│       └── api/             # Typed API client
+│       ├── api/             # Typed API client
+│       ├── styles/          # CSS tokens, animations, component styles
+│       ├── types/           # Shared TypeScript types
+│       └── utils/           # Formatting helpers
 ├── pyproject.toml           # Python dependencies (uv)
 ├── .env.example             # Environment config template
 └── SETUP.md                 # This file

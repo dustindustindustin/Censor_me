@@ -28,7 +28,7 @@ from typing import Callable
 
 import cv2
 
-from backend.models.events import RedactionEvent
+from backend.models.events import PiiType, RedactionEvent
 
 logger = logging.getLogger(__name__)
 from backend.models.project import ProjectFile
@@ -78,12 +78,17 @@ class ScanOrchestrator:
         self._video_svc = VideoService()
         self._ocr = OcrService(use_gpu=use_gpu)
         self._classifier = PiiClassifier(
-            confidence_threshold=project.scan_settings.confidence_threshold
+            confidence_threshold=project.scan_settings.confidence_threshold,
+            entity_confidence_overrides=project.scan_settings.entity_confidence_overrides,
         )
         if rules:
             self._classifier.set_custom_rules(rules)
             logger.info("Loaded %d rules into classifier.", len(rules))
         self._tracker = TrackerService()
+
+        # Face detection (lazy-loaded only if enabled in scan settings)
+        self._detect_faces = project.scan_settings.detect_faces
+        self._face_detector = None
 
     async def run(self) -> list[RedactionEvent]:
         """
@@ -190,6 +195,29 @@ class ScanOrchestrator:
 
             # Stage 3: classify detected text as PII or non-PII
             candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
+
+            # Stage 3b: face detection (runs on the same frame as OCR)
+            if self._detect_faces:
+                if self._face_detector is None:
+                    from backend.services.face_detector import FaceDetector
+                    self._face_detector = FaceDetector()
+                face_threshold = self._classifier._entity_overrides.get(
+                    "face", self._classifier._threshold
+                )
+                face_results = await asyncio.to_thread(
+                    self._face_detector.detect_faces, frame, face_threshold
+                )
+                from backend.services.pii_classifier import PiiCandidate
+                for fx, fy, fw, fh, fconf in face_results:
+                    candidates.append(PiiCandidate(
+                        text="[face]",
+                        pii_type=PiiType.FACE,
+                        confidence=fconf,
+                        bbox=(fx, fy, fw, fh),
+                        source_frame=frame_idx,
+                        source_time_ms=time_ms,
+                    ))
+
             all_candidates.extend(candidates)
             del frame  # release 6–32 MB immediately; don't wait for GC
 
@@ -302,6 +330,25 @@ class ScanOrchestrator:
                     ]
 
                 candidates = self._classifier.classify(ocr_results, rf_idx, time_ms)
+
+                if self._detect_faces and self._face_detector is not None:
+                    face_threshold = self._classifier._entity_overrides.get(
+                        "face", self._classifier._threshold
+                    )
+                    face_results = await asyncio.to_thread(
+                        self._face_detector.detect_faces, frame, face_threshold
+                    )
+                    from backend.services.pii_classifier import PiiCandidate
+                    for fx, fy, fw, fh, fconf in face_results:
+                        candidates.append(PiiCandidate(
+                            text="[face]",
+                            pii_type=PiiType.FACE,
+                            confidence=fconf,
+                            bbox=(fx, fy, fw, fh),
+                            source_frame=rf_idx,
+                            source_time_ms=time_ms,
+                        ))
+
                 refine_candidates.extend(candidates)
                 del frame
 

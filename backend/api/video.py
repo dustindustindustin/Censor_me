@@ -5,25 +5,19 @@ POST /video/import/{project_id}  — import a video file into a project
 GET  /video/proxy/{project_id}   — serve proxy video with range request support
 """
 
-import os
 from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
+from backend.config import project_dir
 from backend.models.project import ProjectFile, VideoMetadata
 from backend.services.video_service import VideoService
 
 router = APIRouter()
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
-
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024 * 1024  # 50 GB
-
-
-def _project_dir(project_id: str) -> Path:
-    return PROJECTS_DIR / project_id
 
 
 @router.post("/import/{project_id}")
@@ -32,8 +26,8 @@ async def import_video(project_id: str, file: UploadFile):
     Save uploaded video to project dir, extract metadata, and generate proxy.
     Proxy generation runs synchronously for now (async task queue in v0.2).
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Validate file extension
@@ -50,11 +44,11 @@ async def import_video(project_id: str, file: UploadFile):
     if not safe_name or safe_name in (".", ".."):
         raise HTTPException(status_code=422, detail="Invalid filename")
 
-    video_path = project_dir / safe_name
+    video_path = proj_dir / safe_name
 
     # Defense-in-depth: ensure the resolved path stays inside the project directory
     try:
-        video_path.resolve().relative_to(project_dir.resolve())
+        video_path.resolve().relative_to(proj_dir.resolve())
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid file path")
 
@@ -72,13 +66,13 @@ async def import_video(project_id: str, file: UploadFile):
     # Extract metadata and generate proxy
     svc = VideoService()
     metadata = svc.get_metadata(video_path)
-    proxy_path = svc.generate_proxy(video_path, project_dir)
+    proxy_path = svc.generate_proxy(video_path, proj_dir)
 
     # Update project
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     project.video = metadata
     project.proxy_path = str(proxy_path)
-    project.save(project_dir)
+    project.save(proj_dir)
 
     return {
         "video_path": str(video_path),
@@ -93,11 +87,11 @@ async def serve_proxy(project_id: str, request: Request):
     Serve the proxy video with HTTP range request support.
     This allows the browser <video> element to seek without buffering the full file.
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
+    project = ProjectFile.load(proj_dir)
     if not project.proxy_path or not Path(project.proxy_path).exists():
         raise HTTPException(status_code=404, detail="Proxy video not found. Import a video first.")
 

@@ -8,14 +8,18 @@ Startup sequence:
 4. Mount API routers
 """
 
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.api import export, projects, rules, scan, system, video
 from backend.utils.gpu_detect import detect_gpu
 from backend.utils.startup import initialize_models
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -45,6 +49,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch unhandled exceptions and return structured JSON instead of bare 500s."""
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "type": type(exc).__name__},
+    )
+
 
 # API routers
 app.include_router(system.router, prefix="/system", tags=["system"])

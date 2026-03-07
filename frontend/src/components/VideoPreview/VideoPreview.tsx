@@ -4,10 +4,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, Loader2, Minus, Pause, Play, Plus } from 'lucide-react'
 import { getProject, importVideo, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
 import { useProjectStore } from '../../store/projectStore'
+import { formatMs } from '../../utils/format'
 import { FrameTestModal } from './FrameTestModal'
 import { OverlayCanvas } from './OverlayCanvas'
 import { Timeline } from './Timeline'
@@ -17,10 +19,9 @@ interface Props {
   style?: React.CSSProperties
 }
 
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  const m = Math.floor(s / 60)
-  return `${m}:${String(s % 60).padStart(2, '0')}`
+
+function rangePct(value: number, min: number, max: number): string {
+  return `${((value - min) / (max - min)) * 100}%`
 }
 
 export function VideoPreview({ videoRef, style }: Props) {
@@ -84,6 +85,8 @@ export function VideoPreview({ videoRef, style }: Props) {
   // Range scan state (ephemeral UI — not persisted to project)
   const [inPoint, setInPoint] = useState<number | null>(null)
   const [outPoint, setOutPoint] = useState<number | null>(null)
+  const [rangeOpen, setRangeOpen] = useState(false)
+  const rangeRef = useRef<HTMLDivElement>(null)
 
   const videoContainerRef = useRef<HTMLDivElement>(null)
 
@@ -113,11 +116,10 @@ export function VideoPreview({ videoRef, style }: Props) {
     if (scanProgress.stage === 'done' && project) {
       getProject(project.project_id).then(setProject).catch(console.error)
     }
-  }, [scanProgress.stage])
+  }, [scanProgress.stage, project?.project_id])
 
   // Seek the video to each frame as it's scanned/tracked so the user can see
-  // a live preview of what is being examined. During OCR, only seeks when
-  // paused. During tracking, always seeks (shows which frame is being tracked).
+  // a live preview of what is being examined.
   useEffect(() => {
     if (!scanPreviewFrame || !videoRef.current) return
     const isTracking = scanProgress.stage === 'track' || scanProgress.stage === 'tracking'
@@ -125,6 +127,18 @@ export function VideoPreview({ videoRef, style }: Props) {
     if (isTracking && !videoRef.current.paused) videoRef.current.pause()
     videoRef.current.currentTime = scanPreviewFrame.time_ms / 1000
   }, [scanPreviewFrame?.time_ms])
+
+  // Close range dropdown on click outside
+  useEffect(() => {
+    if (!rangeOpen) return
+    const handler = (e: MouseEvent) => {
+      if (rangeRef.current && !rangeRef.current.contains(e.target as Node)) {
+        setRangeOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [rangeOpen])
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!project || !e.target.files?.[0]) return
@@ -208,7 +222,7 @@ export function VideoPreview({ videoRef, style }: Props) {
           : 'No PII found on this frame'
       )
     } catch (err) {
-      setScanFrameMsg('Scan failed — check console')
+      setScanFrameMsg('Scan failed \u2014 check console')
       console.error('scanFrame error:', err)
     } finally {
       setScanningFrame(false)
@@ -238,146 +252,154 @@ export function VideoPreview({ videoRef, style }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg)', ...style }}>
       {/* Toolbar */}
       <div style={{ padding: 'var(--space-2) var(--space-3)', background: 'var(--surface)', borderBottom: '1px solid var(--border-hairline)', display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
-        {/* Primary actions */}
-        <label style={{ cursor: importing ? 'wait' : 'pointer' }}>
-          <input
-            type="file"
-            accept=".mp4,.mov,.mkv,.avi,.webm"
-            style={{ display: 'none' }}
-            onChange={handleImport}
-            disabled={importing}
-          />
-          <span style={{
-            display: 'inline-flex', alignItems: 'center',
-            padding: 'var(--space-2) var(--space-4)',
-            minHeight: 36,
-            background: 'var(--glass-bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--font-size-body)',
-            cursor: importing ? 'wait' : 'pointer',
-            opacity: importing ? 0.5 : 1,
-            transition: 'all var(--transition-fast)',
-          }}>
-            {importing ? 'Importing…' : 'Import Video'}
-          </span>
-        </label>
-
-        {project?.video && (
-          <button
-            className="primary"
-            onClick={handleScan}
-            disabled={isScanPending || isScanRunning}
-          >
-            {isScanPending
-              ? 'Starting…'
-              : isScanRunning
-              ? scanProgress.stage === 'track'
-                ? `Tracking… ${scanProgress.progressPct}%`
-                : scanProgress.stage === 'tracking'
-                ? 'Tracking… 0%'
-                : scanProgress.stage === 'linking'
-                ? `Linking… ${scanProgress.progressPct}%`
-                : scanProgress.stage === 'link_done'
-                ? 'Linking… 100%'
-                : scanProgress.stage === 'refining'
-                ? `Refining… ${scanProgress.progressPct}%`
-                : scanProgress.stage === 'refine_done'
-                ? 'Refinement done'
-                : `Scanning… ${scanProgress.progressPct}%`
-              : 'Scan for PII'}
-          </button>
-        )}
-
-        {/* Separator */}
-        {project?.video && <div style={{ width: 1, height: 20, background: 'var(--border-hairline)', margin: '0 var(--space-1)' }} />}
-
-        {/* Frame tools */}
-        {project?.video && (
-          <button
-            className="secondary"
-            onClick={() => setShowFrameTest(true)}
-            disabled={isScanRunning}
-            title="Test OCR and PII detection on a single frame (diagnostic, no events created)"
-          >
-            Test Frame
-          </button>
-        )}
-
-        {project?.video && (
-          <button
-            className="secondary"
-            onClick={handleScanFrame}
-            disabled={scanningFrame || isScanRunning || isScanPending}
-            title="Scan current frame for PII and add results as pending events"
-          >
-            {scanningFrame ? 'Scanning…' : 'Scan Frame'}
-          </button>
-        )}
-
-        {project?.video && (
-          <button
-            className={drawingMode ? 'primary' : 'secondary'}
-            onClick={() => setDrawingMode(!drawingMode)}
-            title="Draw a manual redaction box on the video"
-          >
-            {drawingMode ? 'Drawing…' : 'Draw Box'}
-          </button>
-        )}
-
-        {project?.video && drawingMode && (
-          <button
-            className={staticDrawMode ? 'primary' : 'ghost'}
-            onClick={() => setStaticDrawMode(!staticDrawMode)}
-            title={staticDrawMode
-              ? 'Pin mode: drawn box stays at a fixed position for the entire video'
-              : 'Track mode: drawn box follows content using CSRT tracking'}
-            style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}
-          >
-            {staticDrawMode ? 'Pin' : 'Track'}
-          </button>
-        )}
-
-        {/* Range scan — collapsible group */}
-        {project?.video && (
-          <details style={{ position: 'relative' }}>
-            <summary style={{
-              cursor: 'pointer',
+        {/* Group 1: Import + Scan */}
+        <div className="toolbar-group">
+          <label style={{ cursor: importing ? 'wait' : 'pointer' }}>
+            <input
+              type="file"
+              accept=".mp4,.mov,.mkv,.avi,.webm"
+              style={{ display: 'none' }}
+              onChange={handleImport}
+              disabled={importing}
+            />
+            <span style={{
+              display: 'inline-flex', alignItems: 'center',
               padding: 'var(--space-2) var(--space-4)',
               minHeight: 36,
               background: 'var(--glass-bg)',
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius-md)',
               fontSize: 'var(--font-size-body)',
-              color: 'var(--text-muted)',
-              listStyle: 'none',
-              display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)',
+              cursor: importing ? 'wait' : 'pointer',
+              opacity: importing ? 0.5 : 1,
               transition: 'all var(--transition-fast)',
             }}>
-              Range ▾
-            </summary>
-            <div style={{
-              position: 'absolute', top: '100%', left: 0, zIndex: 20,
-              marginTop: 'var(--space-1)',
-              padding: 'var(--space-2)',
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              boxShadow: 'var(--shadow-elevated)',
-              display: 'flex', gap: 'var(--space-2)', whiteSpace: 'nowrap',
-            }}>
-              <button className="secondary" onClick={() => setInPoint(currentTime)} title="Set in-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set In</button>
-              <button className="secondary" onClick={() => setOutPoint(currentTime)} title="Set out-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set Out</button>
-              {inPoint !== null && outPoint !== null && (
-                <button className="primary" onClick={handleRangeScan} disabled={isScanPending || isScanRunning} title={`Scan ${formatMs(Math.min(inPoint, outPoint))} – ${formatMs(Math.max(inPoint, outPoint))}`} style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>
-                  Scan Range
-                </button>
-              )}
-              {(inPoint !== null || outPoint !== null) && (
-                <button className="ghost" onClick={() => { setInPoint(null); setOutPoint(null) }} title="Clear range markers" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Clear</button>
-              )}
-            </div>
-          </details>
+              {importing ? 'Importing\u2026' : 'Import Video'}
+            </span>
+          </label>
+
+          {project?.video && (
+            <button
+              className="primary"
+              onClick={handleScan}
+              disabled={isScanPending || isScanRunning}
+            >
+              {isScanPending
+                ? 'Starting\u2026'
+                : isScanRunning
+                ? scanProgress.stage === 'track'
+                  ? `Tracking\u2026 ${scanProgress.progressPct}%`
+                  : scanProgress.stage === 'tracking'
+                  ? 'Tracking\u2026 0%'
+                  : scanProgress.stage === 'linking'
+                  ? `Linking\u2026 ${scanProgress.progressPct}%`
+                  : scanProgress.stage === 'link_done'
+                  ? 'Linking\u2026 100%'
+                  : scanProgress.stage === 'refining'
+                  ? `Refining\u2026 ${scanProgress.progressPct}%`
+                  : scanProgress.stage === 'refine_done'
+                  ? 'Refinement done'
+                  : `Scanning\u2026 ${scanProgress.progressPct}%`
+                : 'Scan for PII'}
+            </button>
+          )}
+        </div>
+
+        {/* Separator */}
+        {project?.video && <div className="toolbar-separator" />}
+
+        {/* Group 2: Test Frame + Scan Frame */}
+        {project?.video && (
+          <div className="toolbar-group">
+            <button
+              className="secondary"
+              onClick={() => setShowFrameTest(true)}
+              disabled={isScanRunning}
+              data-tooltip="Test OCR and PII detection on a single frame"
+            >
+              Test Frame
+            </button>
+
+            <button
+              className="secondary"
+              onClick={handleScanFrame}
+              disabled={scanningFrame || isScanRunning || isScanPending}
+              data-tooltip="Scan current frame for PII and add results"
+            >
+              {scanningFrame ? 'Scanning\u2026' : 'Scan Frame'}
+            </button>
+          </div>
+        )}
+
+        {/* Separator */}
+        {project?.video && <div className="toolbar-separator" />}
+
+        {/* Group 3: Draw Box + Pin/Track */}
+        {project?.video && (
+          <div className="toolbar-group">
+            <button
+              className={drawingMode ? 'primary' : 'secondary'}
+              onClick={() => setDrawingMode(!drawingMode)}
+              data-tooltip="Draw a manual redaction box on the video"
+            >
+              {drawingMode ? 'Drawing\u2026' : 'Draw Box'}
+            </button>
+
+            {drawingMode && (
+              <button
+                className={staticDrawMode ? 'primary' : 'ghost'}
+                onClick={() => setStaticDrawMode(!staticDrawMode)}
+                data-tooltip={staticDrawMode
+                  ? 'Pin mode: box stays at fixed position'
+                  : 'Track mode: box follows content via CSRT'}
+                style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}
+              >
+                {staticDrawMode ? 'Pin' : 'Track'}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Separator */}
+        {project?.video && <div className="toolbar-separator" />}
+
+        {/* Group 4: Range dropdown */}
+        {project?.video && (
+          <div ref={rangeRef} style={{ position: 'relative' }}>
+            <button
+              className="secondary"
+              onClick={() => setRangeOpen(!rangeOpen)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)',
+                color: 'var(--text-muted)',
+              }}
+            >
+              Range <ChevronDown size={14} />
+            </button>
+            {rangeOpen && (
+              <div style={{
+                position: 'absolute', top: '100%', left: 0, zIndex: 20,
+                marginTop: 'var(--space-1)',
+                padding: 'var(--space-2)',
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-md)',
+                boxShadow: 'var(--shadow-elevated)',
+                display: 'flex', gap: 'var(--space-2)', whiteSpace: 'nowrap',
+              }}>
+                <button className="secondary" onClick={() => setInPoint(currentTime)} data-tooltip="Set in-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set In</button>
+                <button className="secondary" onClick={() => setOutPoint(currentTime)} data-tooltip="Set out-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set Out</button>
+                {inPoint !== null && outPoint !== null && (
+                  <button className="primary" onClick={handleRangeScan} disabled={isScanPending || isScanRunning} data-tooltip={`Scan ${formatMs(Math.min(inPoint, outPoint))} \u2013 ${formatMs(Math.max(inPoint, outPoint))}`} style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>
+                    Scan Range
+                  </button>
+                )}
+                {(inPoint !== null || outPoint !== null) && (
+                  <button className="ghost" onClick={() => { setInPoint(null); setOutPoint(null) }} data-tooltip="Clear range markers" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Clear</button>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {importError && (
@@ -390,18 +412,20 @@ export function VideoPreview({ videoRef, style }: Props) {
         {/* Toggles — right-aligned */}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-2)' }}>
           <button
-            className="ghost"
+            className="ghost toolbar-toggle"
             onClick={toggleLivePreviewMode}
-            style={{ opacity: livePreviewMode ? 1 : 0.4, fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)', transition: 'opacity var(--transition-normal)' }}
-            title="When paused, render actual blur/pixelate/solid_box effects on the canvas"
+            data-active={livePreviewMode}
+            data-tooltip="Preview blur/pixelate/solid effects when paused"
+            style={{ fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)' }}
           >
             Preview Effects
           </button>
           <button
-            className="ghost"
+            className="ghost toolbar-toggle"
             onClick={toggleRedactionAreas}
-            style={{ opacity: showRedactionAreas ? 1 : 0.4, fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)', transition: 'opacity var(--transition-normal)' }}
-            title="Toggle redaction preview"
+            data-active={showRedactionAreas}
+            data-tooltip="Toggle redaction preview"
+            style={{ fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)' }}
           >
             Redactions
           </button>
@@ -410,14 +434,12 @@ export function VideoPreview({ videoRef, style }: Props) {
 
       {/* Scan progress bar */}
       {(isScanPending || isScanRunning) && (
-        <div style={{ height: 3, background: 'var(--border)', position: 'relative' }}>
+        <div className="progress-track" style={{ height: 3, borderRadius: 0 }}>
           <div
-            className={scanProgress.stage === 'done' ? 'shimmer-bar' : undefined}
+            className={scanProgress.stage === 'done' ? 'shimmer-bar' : 'progress-fill'}
             style={{
-              position: 'absolute', left: 0, top: 0, height: '100%',
               width: isScanPending ? '2%' : `${scanProgress.progressPct}%`,
-              background: 'var(--accent)',
-              transition: 'width 0.3s',
+              borderRadius: 0,
             }}
           />
         </div>
@@ -461,13 +483,13 @@ export function VideoPreview({ videoRef, style }: Props) {
           </>
         ) : importing ? (
           <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <div style={{ fontSize: 'var(--font-size-title)', opacity: 0.4 }}>⟳</div>
-            <div style={{ fontWeight: 500 }}>Generating proxy video…</div>
+            <Loader2 size={32} style={{ opacity: 0.4, animation: 'spin 1s linear infinite' }} />
+            <div style={{ fontWeight: 500 }}>Generating proxy video\u2026</div>
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>This may take a minute for large files</div>
           </div>
         ) : (
           <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)' }}>
-            <div style={{ fontSize: 40, opacity: 0.3 }}>▶</div>
+            <Play size={40} style={{ opacity: 0.3 }} />
             <div style={{ fontWeight: 500 }}>Import a video to get started</div>
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Drag and drop or click Import Video above</div>
           </div>
@@ -486,12 +508,13 @@ export function VideoPreview({ videoRef, style }: Props) {
           <button
             onClick={handlePlayPause}
             style={{
-              fontSize: 16, padding: 'var(--space-1) var(--space-2)', minWidth: 40, minHeight: 36,
+              padding: 'var(--space-1) var(--space-2)', minWidth: 40, minHeight: 36,
               background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-md)',
               boxShadow: '0 0 12px rgba(216, 27, 96, 0.2)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
-            {isPlaying ? '⏸' : '▶'}
+            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
           </button>
 
           {/* Time */}
@@ -506,7 +529,7 @@ export function VideoPreview({ videoRef, style }: Props) {
               type="range" min={0} max={1} step={0.05}
               value={volume}
               onChange={handleVolume}
-              style={{ width: 72, accentColor: 'var(--accent)' }}
+              style={{ width: 72, '--value-pct': rangePct(volume, 0, 1) } as React.CSSProperties}
             />
           </div>
 
@@ -516,19 +539,23 @@ export function VideoPreview({ videoRef, style }: Props) {
             <select
               value={playbackRate}
               onChange={handleRate}
-              style={{ fontSize: 'var(--font-size-small)', background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 'var(--space-1)', minHeight: 'auto' }}
+              style={{ fontSize: 'var(--font-size-small)', minHeight: 'auto' }}
             >
               {[0.25, 0.5, 0.75, 1, 1.5, 2].map((r) => (
-                <option key={r} value={r}>{r}×</option>
+                <option key={r} value={r}>{r}&times;</option>
               ))}
             </select>
           </div>
 
           {/* Zoom */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', marginLeft: 'auto' }}>
-            <button className="ghost" onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))} style={{ fontSize: 'var(--font-size-body)', padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32 }}>−</button>
-            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 28, textAlign: 'center' }}>{zoomLevel}×</span>
-            <button className="ghost" onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))} style={{ fontSize: 'var(--font-size-body)', padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32 }}>+</button>
+            <button className="ghost" onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))} style={{ padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Minus size={16} />
+            </button>
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 28, textAlign: 'center' }}>{zoomLevel}&times;</span>
+            <button className="ghost" onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))} style={{ padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Plus size={16} />
+            </button>
           </div>
         </div>
       )}

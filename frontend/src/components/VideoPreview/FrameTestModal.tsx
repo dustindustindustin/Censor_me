@@ -8,10 +8,11 @@
  */
 
 import { useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, ChevronLeft, X } from 'lucide-react'
 import { addEventToProject, testFrame } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import { PII_LABEL_COLORS } from '../../styles/theme'
-import type { FrameTestCandidate, FrameTestRawResult, FrameTestResult, RedactionEvent, TestFrameOverlayBox } from '../../types'
+import type { FrameTestRawResult, FrameTestResult, RedactionEvent, TestFrameOverlayBox } from '../../types'
 
 interface Props {
   projectId: string
@@ -152,9 +153,6 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
     }
   }
 
-  // No auto-run on open — the button starts as "Run Test" so the user
-  // can confirm the frame before waiting for OCR to complete.
-
   const handleFrameChange = (raw: string) => {
     setInputValue(raw)
     const n = parseInt(raw, 10)
@@ -200,7 +198,9 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
           display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
         }}>
           <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', flex: 1 }}>Frame Detection Test</div>
-          <button className="ghost" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: 'var(--space-1)', minHeight: 'auto' }}>×</button>
+          <button className="modal-close" onClick={onClose}>
+            <X size={16} />
+          </button>
         </div>
 
         {/* Frame picker */}
@@ -209,8 +209,12 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
           borderBottom: '1px solid var(--border)',
           display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
         }}>
-          <button onClick={() => handleStep(-30)} title="Back 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>«</button>
-          <button onClick={() => handleStep(-1)} title="Previous frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>‹</button>
+          <button onClick={() => handleStep(-30)} title="Back 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', display: 'flex', alignItems: 'center' }}>
+            <ChevronsLeft size={16} />
+          </button>
+          <button onClick={() => handleStep(-1)} title="Previous frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', display: 'flex', alignItems: 'center' }}>
+            <ChevronLeft size={16} />
+          </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
             <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>Frame</span>
             <input
@@ -228,8 +232,12 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
             />
             <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>/ {totalFrames - 1}</span>
           </div>
-          <button onClick={() => handleStep(1)} title="Next frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>›</button>
-          <button onClick={() => handleStep(30)} title="Forward 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>»</button>
+          <button onClick={() => handleStep(1)} title="Next frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', display: 'flex', alignItems: 'center' }}>
+            <ChevronRight size={16} />
+          </button>
+          <button onClick={() => handleStep(30)} title="Forward 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', display: 'flex', alignItems: 'center' }}>
+            <ChevronsRight size={16} />
+          </button>
 
           <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginLeft: 'var(--space-1)' }}>
             {msToTimecode(timeMs)}
@@ -241,7 +249,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
             disabled={loading}
             style={{ marginLeft: 'auto', fontSize: 'var(--font-size-body)', padding: 'var(--space-2) var(--space-4)' }}
           >
-            {loading ? 'Testing…' : 'Run Test'}
+            {loading ? 'Testing\u2026' : 'Run Test'}
           </button>
         </div>
 
@@ -249,8 +257,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
         <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4) var(--space-5)' }}>
           {loading && (
             <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)', textAlign: 'center', padding: 'var(--space-8) 0' }}>
-              Running OCR + Presidio on frame {frameIndex}…
-              <div style={{ fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-2)' }}>First run loads models — may take 10–30 seconds</div>
+              Running OCR + Presidio on frame {frameIndex}\u2026
+              <div style={{ fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-2)' }}>First run loads models \u2014 may take 10\u201330 seconds</div>
             </div>
           )}
 
@@ -308,12 +316,11 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                               disabled={isLocked}
                               onChange={() => handleToggleOcr(i)}
                               title={isChecked ? 'Uncheck to exclude' : 'Check to add to censor list'}
-                              style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
                             />
                             <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{box.text}</span>
                             <ConfBadge value={box.confidence} />
                             <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                              {box.bbox[2]}×{box.bbox[3]}
+                              {box.bbox[2]}&times;{box.bbox[3]}
                             </span>
                           </div>
                         )
@@ -344,7 +351,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                   <EmptyNote>
                     Presidio found no PII in the OCR text.{' '}
                     {result.ocr.box_count === 0
-                      ? 'OCR also found no text — fix OCR first.'
+                      ? 'OCR also found no text \u2014 fix OCR first.'
                       : 'Try lowering the confidence threshold in scan settings (currently ' +
                         result.presidio.active_threshold.toFixed(2) + ').'}
                   </EmptyNote>
@@ -352,10 +359,10 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                   <>
                     <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
                       Threshold: <strong>{result.presidio.active_threshold.toFixed(2)}</strong>
-                      {' · '}Presidio found <strong>{result.presidio.raw_count}</strong> total
-                      {' · '}<strong style={{ color: 'var(--accept)' }}>{result.presidio.kept_count}</strong> kept
+                      {' \u00b7 '}Presidio found <strong>{result.presidio.raw_count}</strong> total
+                      {' \u00b7 '}<strong style={{ color: 'var(--accept)' }}>{result.presidio.kept_count}</strong> kept
                       {result.presidio.filtered_count > 0 && (
-                        <>{' · '}<strong style={{ color: 'var(--text-muted)' }}>{result.presidio.filtered_count}</strong> filtered</>
+                        <>{' \u00b7 '}<strong style={{ color: 'var(--text-muted)' }}>{result.presidio.filtered_count}</strong> filtered</>
                       )}
                     </div>
 
@@ -388,7 +395,6 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                                   disabled={isLocked}
                                   onChange={() => handleTogglePii(i)}
                                   title={isChecked ? 'Uncheck to exclude from censor list' : 'Check to include'}
-                                  style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
                                 />
                                 <span style={{
                                   fontSize: 'var(--font-size-xs)', fontWeight: 700, letterSpacing: '0.04em',
@@ -422,8 +428,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                 return (
                   <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-4)', borderTop: '1px solid var(--border)' }}>
                     {committed ? (
-                      <div style={{ fontSize: 'var(--font-size-body)', color: 'var(--accept)', fontWeight: 600, textAlign: 'center' }}>
-                        ✓ Added to censor list
+                      <div style={{ fontSize: 'var(--font-size-body)', color: 'var(--accept)', fontWeight: 600, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-2)' }}>
+                        <Check size={16} /> Added to censor list
                       </div>
                     ) : (
                       <button
@@ -433,7 +439,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                         style={{ width: '100%', fontSize: 'var(--font-size-body)' }}
                       >
                         {committing
-                          ? 'Adding…'
+                          ? 'Adding\u2026'
                           : total === 0
                           ? 'No items selected'
                           : `Add ${total} item${total !== 1 ? 's' : ''} to Censor List`
@@ -518,7 +524,7 @@ function FilteredSection({ raw }: { raw: FrameTestRawResult[] }) {
           border: 'none', cursor: 'pointer', padding: 'var(--space-1) 0', display: 'flex', alignItems: 'center', gap: 'var(--space-1)',
         }}
       >
-        <span>{open ? '▾' : '▸'}</span>
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span>{filtered.length} filtered out (click to inspect)</span>
       </button>
       {open && (

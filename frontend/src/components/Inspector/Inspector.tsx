@@ -5,10 +5,12 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { Check, CircleDot, X } from 'lucide-react'
 import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, startExport, startScan, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
 import type { RedactionStyle, RedactionStyleType } from '../../types'
+import { formatMs } from '../../utils/format'
 
 interface Props {
   style?: React.CSSProperties
@@ -24,6 +26,10 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
   blur: 'Radius',
   pixelate: 'Block size',
   solid_box: 'N/A',
+}
+
+function rangePct(value: number, min: number, max: number): string {
+  return `${((value - min) / (max - min)) * 100}%`
 }
 
 export function Inspector({ style }: Props) {
@@ -47,14 +53,13 @@ export function Inspector({ style }: Props) {
   const [quickExportError, setQuickExportError] = useState<string | null>(null)
   const quickExportAbort = useRef(false)
 
-  // Debounce timers — avoid firing API calls on every pixel of drag/color change
+  // Debounce timers
   const strengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const globalStrengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const globalColorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Global style state — controls the "all bars" section.
-  // Initialized from the first event when a project loads; then user-controlled.
+  // Global style state
   const [globalType, setGlobalType] = useState<RedactionStyleType>('blur')
   const [globalStrength, setGlobalStrength] = useState(15)
   const [globalColor, setGlobalColor] = useState('#000000')
@@ -62,17 +67,12 @@ export function Inspector({ style }: Props) {
   const event = events.find((e) => e.event_id === selectedEventId)
   const acceptedCount = events.filter((e) => e.status === 'accepted').length
 
-  // Reset export state when a new scan starts so the export section returns to
-  // idle rather than showing "Export again" from the previous export.
   useEffect(() => {
     if (scanProgress.isRunning) {
       resetExport()
     }
   }, [scanProgress.isRunning])
 
-  // Sync global style controls from the project's default style when the project
-  // changes. Falls back to the first event's style for backwards compatibility
-  // with projects that predate the default_redaction_style setting.
   useEffect(() => {
     const defaultStyle = project?.scan_settings?.default_redaction_style
     if (defaultStyle) {
@@ -85,9 +85,8 @@ export function Inspector({ style }: Props) {
       setGlobalStrength(s.strength)
       setGlobalColor(s.color)
     }
-  }, [project?.project_id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [project?.project_id, events.length > 0]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Clear per-event debounce timers if event changes to avoid saving to the wrong event
   useEffect(() => {
     return () => {
       if (strengthTimer.current) clearTimeout(strengthTimer.current)
@@ -95,7 +94,6 @@ export function Inspector({ style }: Props) {
     }
   }, [selectedEventId])
 
-  // Clear global debounce timers on unmount
   useEffect(() => {
     return () => {
       if (globalStrengthTimer.current) clearTimeout(globalStrengthTimer.current)
@@ -103,9 +101,8 @@ export function Inspector({ style }: Props) {
     }
   }, [])
 
-  // ── Global style handlers (apply to all events + save as project default) ──
+  // ── Global style handlers ──
 
-  /** Persist style as the project's default for future events. */
   const saveDefaultStyle = (style: RedactionStyle) => {
     if (!project) return
     const newScan = { ...project.scan_settings, default_redaction_style: style }
@@ -156,7 +153,7 @@ export function Inspector({ style }: Props) {
     }, 400)
   }
 
-  // ── Export handlers ─────────────────────────────────────────────────────────
+  // ── Export handlers ──
 
   const handleExport = async () => {
     if (!project) return
@@ -177,11 +174,9 @@ export function Inspector({ style }: Props) {
     resetExport()
 
     try {
-      // Step 1: Start scan
       const { scan_id } = await startScan(project.project_id)
       setScanId(scan_id)
 
-      // Step 2: Wait for scan to finish via WebSocket
       await new Promise<void>((resolve, reject) => {
         const ws = openScanProgressSocket(scan_id)
         ws.onmessage = (ev) => {
@@ -194,12 +189,10 @@ export function Inspector({ style }: Props) {
 
       if (quickExportAbort.current) return
 
-      // Step 3: Accept all events
       setQuickExportStatus('accepting')
       bulkUpdateLocal('accepted')
       await bulkUpdateEventStatus(project.project_id, 'accepted')
 
-      // Step 4: Start export
       setQuickExportStatus('exporting')
       const { export_id } = await startExport(project.project_id)
       trackExport(export_id)
@@ -221,13 +214,11 @@ export function Inspector({ style }: Props) {
 
   const applyStyle = async (newStyle: RedactionStyle) => {
     if (!project || !event) return
-    // Optimistic update — the overlay and list reflect the new style immediately
     updateEvent({ ...event, redaction_style: newStyle })
     try {
       await updateEventStyle(project.project_id, event.event_id, newStyle)
     } catch (err) {
       console.error('Failed to save style:', err)
-      // Revert on failure
       updateEvent(event)
     }
   }
@@ -240,9 +231,7 @@ export function Inspector({ style }: Props) {
   const handleStrength = (value: number) => {
     if (!project || !event) return
     const newStyle = { ...event.redaction_style, strength: value }
-    // Update store immediately for responsive feel
     updateEvent({ ...event, redaction_style: newStyle })
-    // Debounce the API call — only save 400ms after the user stops dragging
     if (strengthTimer.current) clearTimeout(strengthTimer.current)
     strengthTimer.current = setTimeout(() => {
       updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
@@ -252,9 +241,7 @@ export function Inspector({ style }: Props) {
   const handleColor = (color: string) => {
     if (!project || !event) return
     const newStyle = { ...event.redaction_style, color }
-    // Optimistic store update for live preview of color in the box overlay label
     updateEvent({ ...event, redaction_style: newStyle })
-    // Debounce the API call — color pickers fire onChange continuously while dragging
     if (colorTimer.current) clearTimeout(colorTimer.current)
     colorTimer.current = setTimeout(() => {
       updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
@@ -265,23 +252,27 @@ export function Inspector({ style }: Props) {
     <div className="glass" style={{ display: 'flex', flexDirection: 'column', borderRadius: 0, ...style }}>
       {/* Export section */}
       <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
-        <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', marginBottom: 'var(--space-3)' }}>Export</div>
+        <div className="section-header">
+          <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Export</span>
+        </div>
 
         {exportProg.isRunning ? (
           <div>
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
-              Encoding… {exportProg.pct}%
+              Encoding\u2026 {exportProg.pct}%
               {exportProg.totalFrames > 0 && (
                 <span> ({exportProg.currentFrame.toLocaleString()} / {exportProg.totalFrames.toLocaleString()} frames)</span>
               )}
             </div>
-            <div style={{ height: 4, background: 'var(--border)', borderRadius: 'var(--radius-sm)' }}>
-              <div style={{ height: '100%', width: `${exportProg.pct}%`, background: 'var(--accent)', borderRadius: 'var(--radius-sm)', transition: 'width 0.3s' }} />
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${exportProg.pct}%` }} />
             </div>
           </div>
         ) : exportProg.outputPath ? (
           <div>
-            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--accept)', marginBottom: 'var(--space-2)' }}><span className="checkmark-animate">✓</span> Export complete</div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--accept)', marginBottom: 'var(--space-2)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+              <span className="checkmark-animate"><Check size={16} /></span> Export complete
+            </div>
             <a
               href={project ? exportDownloadUrl(project.project_id) : '#'}
               download
@@ -317,9 +308,9 @@ export function Inspector({ style }: Props) {
                 title="Scan video, accept all findings, and export in one step"
                 style={{ flex: 1, fontSize: 'var(--font-size-small)' }}
               >
-                {quickExportStatus === 'scanning' ? 'Scanning…'
-                  : quickExportStatus === 'accepting' ? 'Accepting…'
-                  : quickExportStatus === 'exporting' ? 'Exporting…'
+                {quickExportStatus === 'scanning' ? 'Scanning\u2026'
+                  : quickExportStatus === 'accepting' ? 'Accepting\u2026'
+                  : quickExportStatus === 'exporting' ? 'Exporting\u2026'
                   : 'Quick Export'}
               </button>
             </div>
@@ -328,9 +319,9 @@ export function Inspector({ style }: Props) {
             )}
             {quickExportStatus !== 'idle' && quickExportStatus !== 'error' && quickExportStatus !== 'done' && (
               <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
-                {quickExportStatus === 'scanning' ? 'Step 1/3: Scanning for PII…'
-                  : quickExportStatus === 'accepting' ? 'Step 2/3: Accepting all findings…'
-                  : 'Step 3/3: Encoding video…'}
+                {quickExportStatus === 'scanning' ? 'Step 1/3: Scanning for PII\u2026'
+                  : quickExportStatus === 'accepting' ? 'Step 2/3: Accepting all findings\u2026'
+                  : 'Step 3/3: Encoding video\u2026'}
               </div>
             )}
           </>
@@ -340,9 +331,9 @@ export function Inspector({ style }: Props) {
       {/* Global censor bar style — applies to all events */}
       {events.length > 0 && (
         <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+          <div className="section-header">
             <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Censor Bar Style</span>
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>— all {events.length} bar{events.length !== 1 ? 's' : ''}</span>
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>\u2014 all {events.length} bar{events.length !== 1 ? 's' : ''}</span>
           </div>
 
           {/* Style type buttons */}
@@ -367,9 +358,9 @@ export function Inspector({ style }: Props) {
                     minHeight: 'auto',
                   }}
                   title={
-                    t === 'blur' ? 'Gaussian blur — obscures text while looking natural'
-                    : t === 'pixelate' ? 'Pixelate — mosaic effect'
-                    : 'Solid box — opaque filled rectangle'
+                    t === 'blur' ? 'Gaussian blur \u2014 obscures text while looking natural'
+                    : t === 'pixelate' ? 'Pixelate \u2014 mosaic effect'
+                    : 'Solid box \u2014 opaque filled rectangle'
                   }
                 >
                   {STYLE_LABELS[t]}
@@ -391,7 +382,7 @@ export function Inspector({ style }: Props) {
                 step={2}
                 value={globalStrength}
                 onChange={(e) => handleGlobalStrength(parseInt(e.target.value, 10))}
-                style={{ flex: 1, accentColor: 'var(--accent)' }}
+                style={{ flex: 1, '--value-pct': rangePct(globalStrength, 3, 51) } as React.CSSProperties}
               />
               <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
                 {globalStrength}
@@ -403,14 +394,17 @@ export function Inspector({ style }: Props) {
           {globalType === 'solid_box' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
               <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
-              <input
-                type="color"
-                value={globalColor}
-                onChange={(e) => handleGlobalColor(e.target.value)}
-                style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: 'none' }}
-                title="Box fill color for all bars"
-              />
-              <code style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>{globalColor}</code>
+              <div className="color-swatch-wrapper">
+                <div className="color-swatch" style={{ background: globalColor }}>
+                  <input
+                    type="color"
+                    value={globalColor}
+                    onChange={(e) => handleGlobalColor(e.target.value)}
+                    title="Box fill color for all bars"
+                  />
+                </div>
+                <span className="color-hex">{globalColor}</span>
+              </div>
             </div>
           )}
 
@@ -423,7 +417,9 @@ export function Inspector({ style }: Props) {
       {/* Selected event detail */}
       {event ? (
         <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4)' }}>
-          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', marginBottom: 'var(--space-4)' }}>Finding Detail</div>
+          <div className="section-header">
+            <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Finding Detail</span>
+          </div>
 
           <Field label="Type">
             <span className={`tag ${event.pii_type}`}>{event.pii_type}</span>
@@ -431,8 +427,8 @@ export function Inspector({ style }: Props) {
 
           <Field label="Confidence">
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 'var(--radius-sm)' }}>
-                <div style={{ width: `${event.confidence * 100}%`, height: '100%', background: 'var(--accent)', borderRadius: 'var(--radius-sm)', transition: 'width var(--transition-fast)' }} />
+              <div className="progress-track" style={{ flex: 1, height: 6 }}>
+                <div className="progress-fill" style={{ width: `${event.confidence * 100}%` }} />
               </div>
               <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 32 }}>
                 {Math.round(event.confidence * 100)}%
@@ -442,20 +438,20 @@ export function Inspector({ style }: Props) {
 
           <Field label="Detected text">
             <code style={{ fontSize: 'var(--font-size-small)', background: 'var(--bg)', padding: 'var(--space-1) var(--space-2)', borderRadius: 'var(--radius-sm)', display: 'block', wordBreak: 'break-all' }}>
-              {event.extracted_text ?? '[secure mode — not stored]'}
+              {event.extracted_text ?? '[secure mode \u2014 not stored]'}
             </code>
           </Field>
 
           <Field label="Time ranges">
             {event.time_ranges.map((r, i) => (
               <div key={i} style={{ fontSize: 'var(--font-size-small)', fontFamily: 'monospace', marginBottom: 'var(--space-1)' }}>
-                {formatMs(r.start_ms)} – {formatMs(r.end_ms)}
+                {formatMs(r.start_ms)} \u2013 {formatMs(r.end_ms)}
               </div>
             ))}
           </Field>
 
           <Field label="Source / Tracking">
-            <span style={{ fontSize: 'var(--font-size-small)' }}>{event.source} · {event.tracking_method}</span>
+            <span style={{ fontSize: 'var(--font-size-small)' }}>{event.source} \u00b7 {event.tracking_method}</span>
           </Field>
 
           <Field label="Style (this finding)">
@@ -481,9 +477,9 @@ export function Inspector({ style }: Props) {
                       minHeight: 'auto',
                     }}
                     title={
-                      t === 'blur' ? 'Gaussian blur — obscures text while looking natural'
-                      : t === 'pixelate' ? 'Pixelate — mosaic effect'
-                      : 'Solid box — opaque filled rectangle'
+                      t === 'blur' ? 'Gaussian blur \u2014 obscures text while looking natural'
+                      : t === 'pixelate' ? 'Pixelate \u2014 mosaic effect'
+                      : 'Solid box \u2014 opaque filled rectangle'
                     }
                   >
                     {STYLE_LABELS[t]}
@@ -505,7 +501,7 @@ export function Inspector({ style }: Props) {
                   step={2}
                   value={event.redaction_style.strength}
                   onChange={(e) => handleStrength(parseInt(e.target.value, 10))}
-                  style={{ flex: 1, accentColor: 'var(--accent)' }}
+                  style={{ flex: 1, '--value-pct': rangePct(event.redaction_style.strength, 3, 51) } as React.CSSProperties}
                 />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
                   {event.redaction_style.strength}
@@ -517,16 +513,17 @@ export function Inspector({ style }: Props) {
             {event.redaction_style.type === 'solid_box' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
-                <input
-                  type="color"
-                  value={event.redaction_style.color}
-                  onChange={(e) => handleColor(e.target.value)}
-                  style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: 'none' }}
-                  title="Box fill color"
-                />
-                <code style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-                  {event.redaction_style.color}
-                </code>
+                <div className="color-swatch-wrapper">
+                  <div className="color-swatch" style={{ background: event.redaction_style.color }}>
+                    <input
+                      type="color"
+                      value={event.redaction_style.color}
+                      onChange={(e) => handleColor(e.target.value)}
+                      title="Box fill color"
+                    />
+                  </div>
+                  <span className="color-hex">{event.redaction_style.color}</span>
+                </div>
               </div>
             )}
 
@@ -544,24 +541,24 @@ export function Inspector({ style }: Props) {
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <button
                 className="accept"
-                style={{ flex: 1, opacity: event.status === 'accepted' ? 1 : 0.55 }}
+                style={{ flex: 1, opacity: event.status === 'accepted' ? 1 : 0.55, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}
                 onClick={() => handleStatusChange('accepted')}
               >
-                {event.status === 'accepted' ? '✓ Accepted' : 'A — Accept'}
+                {event.status === 'accepted' ? <><Check size={16} /> Accepted</> : 'A \u2014 Accept'}
               </button>
               <button
                 className="reject"
-                style={{ flex: 1, opacity: event.status === 'rejected' ? 1 : 0.55 }}
+                style={{ flex: 1, opacity: event.status === 'rejected' ? 1 : 0.55, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}
                 onClick={() => handleStatusChange('rejected')}
               >
-                {event.status === 'rejected' ? '✗ Rejected' : 'R — Reject'}
+                {event.status === 'rejected' ? <><X size={16} /> Rejected</> : 'R \u2014 Reject'}
               </button>
             </div>
           </Field>
         </div>
       ) : (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 'var(--space-6)', textAlign: 'center', gap: 'var(--space-2)' }}>
-          <div style={{ fontSize: 'var(--font-size-section)', opacity: 0.3 }}>◎</div>
+          <CircleDot size={32} style={{ opacity: 0.3 }} />
           <div style={{ fontSize: 'var(--font-size-body)' }}>No finding selected</div>
           <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Click a finding from the left panel to view details</div>
         </div>
@@ -572,13 +569,13 @@ export function Inspector({ style }: Props) {
         <div style={{ fontWeight: 500, marginBottom: 'var(--space-1)' }}>Shortcuts</div>
         {[
           ['Space', 'Play / Pause'],
-          ['J / L', 'Step ±5 s'],
+          ['J / L', 'Step \u00b15 s'],
           ['K', 'Pause'],
           ['A', 'Accept selected'],
           ['R', 'Reject selected'],
         ].map(([key, desc]) => (
           <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 'var(--space-1)' }}>
-            <code style={{ background: 'var(--surface-secondary)', padding: '1px 6px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-xs)' }}>{key}</code>
+            <kbd>{key}</kbd>
             <span>{desc}</span>
           </div>
         ))}
@@ -596,10 +593,4 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </div>
   )
-}
-
-function formatMs(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  const m = Math.floor(s / 60)
-  return `${m}:${String(s % 60).padStart(2, '0')}`
 }

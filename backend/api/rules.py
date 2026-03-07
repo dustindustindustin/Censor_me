@@ -3,20 +3,18 @@
 import concurrent.futures
 import json
 import logging
-import os
 import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from backend.config import PROJECTS_DIR
 from backend.models.rules import Rule, RuleSet
 
 MAX_PATTERN_LEN = 500
 MAX_SAMPLE_LEN = 10_000
 
 router = APIRouter()
-
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
 
 _log = logging.getLogger(__name__)
 
@@ -31,8 +29,8 @@ def _load_custom_rules() -> list[Rule]:
         return []
     try:
         return [Rule.model_validate(r) for r in json.loads(f.read_text())]
-    except Exception:
-        _log.warning("Failed to load custom_rules.json, starting empty")
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        _log.warning("Failed to load custom_rules.json (%s), starting empty", exc)
         return []
 
 
@@ -91,6 +89,53 @@ _DEFAULT_RULES: list[Rule] = [
         priority=8,
         confidence=0.90,
         description="6-digit employee/badge ID, e.g. (139168) or 139168.",
+    ),
+    Rule(
+        rule_id="ipv4_address",
+        name="IPv4 Address",
+        type="regex",
+        # Matches valid IPv4 addresses (0.0.0.0 – 255.255.255.255).
+        # Excludes common non-PII addresses via negative lookahead:
+        # 127.0.0.1 (loopback), 0.0.0.0 (unspecified), 255.255.255.255 (broadcast).
+        pattern=r"\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)(?!255\.255\.255\.255\b)(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+        label="account_id",
+        priority=8,
+        confidence=0.85,
+        description="IPv4 address (excludes loopback, unspecified, broadcast).",
+    ),
+    Rule(
+        rule_id="url_credentials",
+        name="URL with Credentials",
+        type="regex",
+        # Matches URLs containing embedded username:password before the host.
+        pattern=r"https?://[^\s:@]+:[^\s:@]+@[^\s/]+",
+        label="account_id",
+        priority=5,
+        confidence=0.95,
+        description="URL with embedded credentials, e.g. https://user:pass@host.",
+    ),
+    Rule(
+        rule_id="bank_account_us",
+        name="US Bank Account Number",
+        type="regex",
+        # Matches 12-digit numbers with optional separators (dashes or spaces).
+        # More specific than bare \d{8,17} to avoid excessive false positives.
+        pattern=r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
+        label="account_id",
+        priority=8,
+        confidence=0.75,
+        description="12-digit bank account number with optional separators.",
+    ),
+    Rule(
+        rule_id="routing_number_aba",
+        name="ABA Routing Number",
+        type="regex",
+        # Matches 9-digit numbers starting with 0-3 (valid ABA prefix range).
+        pattern=r"\b[0-3]\d{8}\b",
+        label="account_id",
+        priority=8,
+        confidence=0.80,
+        description="9-digit ABA routing number (first digit 0\u20133).",
     ),
 ]
 

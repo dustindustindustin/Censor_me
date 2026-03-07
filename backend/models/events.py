@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PiiType(str, Enum):
@@ -31,6 +31,7 @@ class PiiType(str, Enum):
     Medium-confidence types (PERSON, ADDRESS, USERNAME) rely on spaCy NER
     or contextual heuristics and may require user review to confirm.
 
+    FACE indicates a face detected by the OpenCV DNN face detector.
     CUSTOM indicates a match from a user-defined regex rule.
     MANUAL indicates a region drawn by the user without any auto-detection.
     UNKNOWN is the fallback when a Presidio entity type has no mapping.
@@ -46,6 +47,7 @@ class PiiType(str, Enum):
     EMPLOYEE_ID = "employee_id"
     POSTAL_CODE = "postal_code"
     USERNAME = "username"
+    FACE = "face"
     CUSTOM = "custom"
     MANUAL = "manual"
     UNKNOWN = "unknown"
@@ -102,8 +104,8 @@ class BoundingBox(BaseModel):
 
     x: int = Field(description="Left edge of the box in pixels.")
     y: int = Field(description="Top edge of the box in pixels.")
-    w: int = Field(description="Width of the box in pixels.")
-    h: int = Field(description="Height of the box in pixels.")
+    w: int = Field(ge=1, description="Width of the box in pixels.")
+    h: int = Field(ge=1, description="Height of the box in pixels.")
 
 
 class Keyframe(BaseModel):
@@ -180,5 +182,4 @@ class RedactionEvent(BaseModel):
     redaction_style: RedactionStyle = Field(default_factory=RedactionStyle)
     status: EventStatus = EventStatus.PENDING
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)

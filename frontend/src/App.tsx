@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { ChevronRight, Plus, Settings, Zap } from 'lucide-react'
 import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
 import { Inspector } from './components/Inspector/Inspector'
@@ -18,7 +19,7 @@ import type { Project, SystemStatus } from './types'
 
 export default function App() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
-  const [initMessage, setInitMessage] = useState('Connecting to backend…')
+  const [initMessage, setInitMessage] = useState('Connecting to backend\u2026')
   const [initError, setInitError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
@@ -55,11 +56,11 @@ export default function App() {
             }
             break
           }
-          setInitMessage('Initializing models…')
+          setInitMessage('Initializing models\u2026')
         } catch {
           attempts++
           if (attempts > 5) {
-            setInitMessage('Waiting for backend to start…')
+            setInitMessage('Waiting for backend to start\u2026')
           }
           if (attempts > 30) {
             setInitError('Backend not responding. Make sure uvicorn is running on port 8010.')
@@ -75,7 +76,7 @@ export default function App() {
 
   // Update browser tab title
   useEffect(() => {
-    document.title = project ? `${project.name} — Censor Me` : 'Censor Me'
+    document.title = project ? `${project.name} \u2014 Censor Me` : 'Censor Me'
   }, [project?.name])
 
   if (!systemStatus) {
@@ -115,26 +116,26 @@ export default function App() {
         <span style={{ fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }} onClick={clearProject} title="Back to project list">
           Censor Me
         </span>
-        <span style={{ color: 'var(--text-disabled)' }}>›</span>
+        <ChevronRight size={14} style={{ color: 'var(--text-disabled)' }} />
         <span>{project.name}</span>
         {project.video && (
           <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-            {project.video.width}×{project.video.height} · {project.video.fps.toFixed(0)} fps · {project.video.codec}
+            {project.video.width}&times;{project.video.height} &middot; {project.video.fps.toFixed(0)} fps &middot; {project.video.codec}
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
           {systemStatus.gpu.cuda_available && (
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-              ⚡ {systemStatus.gpu.gpu_name}
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+              <Zap size={12} /> {systemStatus.gpu.gpu_name}
             </span>
           )}
           <button
             className="ghost"
             onClick={() => setShowSettings(true)}
-            title="Settings"
-            style={{ fontSize: 16, lineHeight: 1, padding: 'var(--space-1)', minHeight: 'auto' }}
+            data-tooltip="Settings"
+            style={{ padding: 'var(--space-1)', minHeight: 'auto', display: 'flex', alignItems: 'center' }}
           >
-            ⚙
+            <Settings size={16} />
           </button>
         </div>
       </div>
@@ -170,13 +171,20 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [newProjectName, setNewProjectName] = useState('Untitled Project')
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     listProjects().then(setProjects).catch(console.error)
   }, [])
 
-  const handleNew = async () => {
-    const name = prompt('Project name:', 'Untitled Project')
+  useEffect(() => {
+    if (showNewProject) inputRef.current?.select()
+  }, [showNewProject])
+
+  const handleCreate = async () => {
+    const name = newProjectName.trim()
     if (!name) return
     setLoading(true)
     setError(null)
@@ -205,19 +213,58 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 'var(--font-size-title)', fontWeight: 600, color: 'var(--accent)' }}>Censor Me</div>
         <div style={{ color: 'var(--text-muted)', marginTop: 'var(--space-2)' }}>Local GPU-accelerated video PII redaction</div>
-        <div style={{ color: 'var(--text-disabled)', fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-1)' }}>⚡ {gpuDisplay}</div>
+        <div style={{ color: 'var(--text-disabled)', fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-1)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}>
+          <Zap size={12} /> {gpuDisplay}
+        </div>
       </div>
 
       {error && <div style={{ color: 'var(--reject)', fontSize: 'var(--font-size-body)' }}>{error}</div>}
 
-      <button
-        className="primary"
-        onClick={handleNew}
-        disabled={loading}
-        style={{ padding: 'var(--space-3) var(--space-8)', fontSize: 'var(--font-size-body)' }}
-      >
-        {loading ? 'Creating…' : '+ New Project'}
-      </button>
+      {showNewProject ? (
+        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+          <input
+            ref={inputRef}
+            type="text"
+            value={newProjectName}
+            onChange={(e) => setNewProjectName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setShowNewProject(false) }}
+            disabled={loading}
+            style={{
+              padding: 'var(--space-2) var(--space-3)',
+              fontSize: 'var(--font-size-body)',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-md)',
+              color: 'var(--text)',
+              width: 240,
+            }}
+          />
+          <button
+            className="primary"
+            onClick={handleCreate}
+            disabled={loading || !newProjectName.trim()}
+            style={{ padding: 'var(--space-2) var(--space-4)' }}
+          >
+            {loading ? 'Creating\u2026' : 'Create'}
+          </button>
+          <button
+            className="secondary"
+            onClick={() => setShowNewProject(false)}
+            disabled={loading}
+            style={{ padding: 'var(--space-2) var(--space-3)' }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="primary"
+          onClick={() => setShowNewProject(true)}
+          style={{ padding: 'var(--space-3) var(--space-8)', fontSize: 'var(--font-size-body)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}
+        >
+          <Plus size={16} /> New Project
+        </button>
+      )}
 
       {projects.length > 0 && (
         <div style={{ width: 420 }}>
@@ -227,27 +274,14 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
           {projects.map((p) => (
             <div
               key={p.project_id}
+              className="project-card"
               onClick={() => handleOpen(p.project_id)}
-              style={{
-                padding: 'var(--space-3) var(--space-4)',
-                background: 'var(--surface)',
-                borderRadius: 'var(--radius-md)',
-                marginBottom: 'var(--space-2)',
-                cursor: 'pointer',
-                border: '1px solid var(--border)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                transition: 'all var(--transition-fast)',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'; e.currentTarget.style.background = 'var(--surface-secondary)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)' }}
             >
               <div>
                 <div style={{ fontWeight: 500 }}>{p.name}</div>
                 {p.video && (
                   <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)', marginTop: 2 }}>
-                    {p.video.width}×{p.video.height} · {(p.video.duration_ms / 60000).toFixed(1)} min
+                    {p.video.width}&times;{p.video.height} &middot; {(p.video.duration_ms / 60000).toFixed(1)} min
                   </div>
                 )}
               </div>

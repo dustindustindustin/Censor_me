@@ -10,21 +10,14 @@ All projects live under ``PROJECTS_DIR`` (default: ``~/censor_me_projects/``).
 Each project gets its own sub-directory named after its UUID.
 """
 
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from backend.config import PROJECTS_DIR, get_project_lock, project_dir
 from backend.models.project import ProjectFile
 
 router = APIRouter()
-
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
-
-
-def _project_dir(project_id: str) -> Path:
-    """Return the directory path for a project given its ID."""
-    return PROJECTS_DIR / project_id
 
 
 @router.get("/")
@@ -66,9 +59,9 @@ async def create_project(name: str = "Untitled Project") -> dict:
     and begin importing a video.
     """
     project = ProjectFile(name=name)
-    project_dir = _project_dir(project.project_id)
-    project_dir.mkdir(parents=True, exist_ok=True)
-    project.save(project_dir)
+    proj_dir = project_dir(project.project_id)
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    project.save(proj_dir)
     return {"project_id": project.project_id}
 
 
@@ -80,10 +73,10 @@ async def get_project(project_id: str) -> ProjectFile:
     Returns the full ``ProjectFile`` model including all events and settings.
     Used by the frontend after import, scan, and on project open.
     """
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectFile.load(project_dir)
+    return ProjectFile.load(proj_dir)
 
 
 @router.delete("/{project_id}")
@@ -96,10 +89,10 @@ async def delete_project(project_id: str):
     """
     import shutil
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    shutil.rmtree(project_dir)
+    shutil.rmtree(proj_dir)
     return {"deleted": project_id}
 
 
@@ -114,14 +107,15 @@ async def add_event(project_id: str, event: dict) -> dict:
     """
     from backend.models.events import RedactionEvent
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
     validated = RedactionEvent.model_validate(event)
-    project = ProjectFile.load(project_dir)
-    project.events.append(validated)
-    project.save(project_dir)
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        project.events.append(validated)
+        project.save(proj_dir)
     return validated.model_dump()
 
 
@@ -137,16 +131,17 @@ async def update_event_style(project_id: str, event_id: str, body: dict) -> dict
     """
     from backend.models.events import RedactionStyle
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
-    for event in project.events:
-        if event.event_id == event_id:
-            event.redaction_style = RedactionStyle.model_validate(body)
-            project.save(project_dir)
-            return event.model_dump()
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        for event in project.events:
+            if event.event_id == event_id:
+                event.redaction_style = RedactionStyle.model_validate(body)
+                project.save(proj_dir)
+                return event.model_dump()
 
     raise HTTPException(status_code=404, detail="Event not found")
 
@@ -164,19 +159,20 @@ async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> 
     """
     from backend.models.events import Keyframe
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
     raw_keyframes = body.get("keyframes", [])
     validated_kfs = [Keyframe.model_validate(kf) for kf in raw_keyframes]
 
-    project = ProjectFile.load(project_dir)
-    for event in project.events:
-        if event.event_id == event_id:
-            event.keyframes = validated_kfs
-            project.save(project_dir)
-            return event.model_dump()
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        for event in project.events:
+            if event.event_id == event_id:
+                event.keyframes = validated_kfs
+                project.save(proj_dir)
+                return event.model_dump()
 
     raise HTTPException(status_code=404, detail="Event not found")
 
@@ -191,17 +187,19 @@ async def update_settings(project_id: str, body: dict) -> ProjectFile:
     """
     from backend.models.project import ScanSettings, OutputSettings
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    project = ProjectFile.load(project_dir)
-    if "scan_settings" in body:
-        merged = project.scan_settings.model_dump() | body["scan_settings"]
-        project.scan_settings = ScanSettings.model_validate(merged)
-    if "output_settings" in body:
-        merged = project.output_settings.model_dump() | body["output_settings"]
-        project.output_settings = OutputSettings.model_validate(merged)
-    project.save(project_dir)
+
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        if "scan_settings" in body:
+            merged = project.scan_settings.model_dump() | body["scan_settings"]
+            project.scan_settings = ScanSettings.model_validate(merged)
+        if "output_settings" in body:
+            merged = project.output_settings.model_dump() | body["output_settings"]
+            project.output_settings = OutputSettings.model_validate(merged)
+        project.save(proj_dir)
     return project
 
 
@@ -227,19 +225,20 @@ async def bulk_update_event_status(project_id: str, body: dict):
     if status not in valid_statuses:
         raise HTTPException(status_code=422, detail=f"Status must be one of {valid_statuses}")
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
-    event_id_set = set(event_ids) if event_ids is not None else None
-    updated = 0
-    for event in project.events:
-        if event_id_set is None or event.event_id in event_id_set:
-            event.status = status
-            updated += 1
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        event_id_set = set(event_ids) if event_ids is not None else None
+        updated = 0
+        for event in project.events:
+            if event_id_set is None or event.event_id in event_id_set:
+                event.status = EventStatus(status)
+                updated += 1
 
-    project.save(project_dir)
+        project.save(proj_dir)
     return {"updated": updated}
 
 
@@ -266,19 +265,20 @@ async def bulk_update_event_style(project_id: str, body: dict):
     event_ids: list[str] | None = body.get("event_ids")
     style = RedactionStyle.model_validate(style_data)
 
-    project_dir = _project_dir(project_id)
-    if not project_dir.exists():
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    project = ProjectFile.load(project_dir)
-    event_id_set = set(event_ids) if event_ids is not None else None
-    updated = 0
-    for event in project.events:
-        if event_id_set is None or event.event_id in event_id_set:
-            event.redaction_style = style
-            updated += 1
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+        event_id_set = set(event_ids) if event_ids is not None else None
+        updated = 0
+        for event in project.events:
+            if event_id_set is None or event.event_id in event_id_set:
+                event.redaction_style = style
+                updated += 1
 
-    project.save(project_dir)
+        project.save(proj_dir)
     return {"updated": updated}
 
 
@@ -300,13 +300,15 @@ async def update_event_status(project_id: str, event_id: str, status: str):
     if status not in valid_statuses:
         raise HTTPException(status_code=422, detail=f"Status must be one of {valid_statuses}")
 
-    project_dir = _project_dir(project_id)
-    project = ProjectFile.load(project_dir)
+    proj_dir = project_dir(project_id)
 
-    for event in project.events:
-        if event.event_id == event_id:
-            event.status = status
-            project.save(project_dir)
-            return {"event_id": event_id, "status": status}
+    async with get_project_lock(project_id):
+        project = ProjectFile.load(proj_dir)
+
+        for event in project.events:
+            if event.event_id == event_id:
+                event.status = EventStatus(status)
+                project.save(proj_dir)
+                return {"event_id": event_id, "status": status}
 
     raise HTTPException(status_code=404, detail="Event not found")

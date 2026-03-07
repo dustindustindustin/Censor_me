@@ -49,6 +49,7 @@ a:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: backdrop-fade var(--transition-normal) ease-out;
 }
 
 .modal-content {
@@ -108,6 +109,11 @@ button:disabled {
 }
 
 /* -- Scrollbar styling -- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }
@@ -123,4 +129,205 @@ button:disabled {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.18);
+}
+
+/* -- Button inner highlight -- */
+button.secondary,
+button.primary {
+  box-shadow: var(--inner-highlight);
+}
+
+button.primary {
+  box-shadow: var(--inner-highlight), var(--shadow-btn-primary);
+}
+
+/* -- Toolbar -- */
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 20px;
+  background: var(--border-hairline);
+  margin: 0 var(--space-1);
+  flex-shrink: 0;
+}
+
+.toolbar-toggle {
+  transition: all var(--transition-normal);
+}
+
+.toolbar-toggle:not([data-active="true"]) {
+  opacity: 0.45;
+}
+
+.toolbar-toggle[data-active="true"] {
+  background: var(--accent-tint);
+  color: var(--text);
+  opacity: 1;
+}
+
+/* -- Finding items -- */
+.finding-item {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-hairline);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background var(--transition-fast);
+}
+
+.finding-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.finding-item[data-selected="true"] {
+  background: var(--accent-tint);
+  border-left-color: var(--accent);
+}
+
+/* -- Section headers -- */
+.section-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+/* -- Keyboard shortcut key caps -- */
+kbd {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: var(--font-size-xs);
+  font-family: inherit;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  line-height: 1.6;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+}
+
+/* -- Progress bars -- */
+.progress-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--accent-pressed), var(--accent), var(--accent-hover));
+  box-shadow: 0 0 8px var(--accent-shadow);
+  transition: width 0.3s;
+}
+
+/* -- Modal close button -- */
+.modal-close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  padding: 0;
+  min-height: auto;
+}
+
+.modal-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+/* -- Tab bar -- */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border-hairline);
+  flex-shrink: 0;
+}
+
+.tab-button {
+  padding: var(--space-3) var(--space-6);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-weight: 400;
+  cursor: pointer;
+  font-size: var(--font-size-body);
+  text-transform: capitalize;
+  transition: color var(--transition-fast), border-color var(--transition-normal);
+  min-height: auto;
+}
+
+.tab-button[data-active="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tab-button:hover:not([data-active="true"]) {
+  color: var(--text);
+}
+
+/* -- CSS Tooltips -- */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  background: var(--surface-secondary);
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-elevated);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  z-index: 100;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+  animation: tooltip-fade var(--transition-fast) ease-out;
+}
+
+/* -- Project card -- */
+.project-card {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all var(--transition-fast);
+}
+
+.project-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: var(--surface-secondary);
 }

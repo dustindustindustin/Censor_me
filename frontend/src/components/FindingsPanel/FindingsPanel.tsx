@@ -4,23 +4,14 @@
  * Displays all RedactionEvents detected in the current project, with controls
  * to filter by PII type and status, sort by time or confidence, and
  * accept/reject individual findings.
- *
- * Each finding item shows:
- * - A color-coded PII type tag
- * - The detected text (or "[secure mode]" if stored_text is off)
- * - The time range
- * - Confidence percentage
- * - Accept/Reject buttons (visible only when the item is selected and pending)
- *
- * Keyboard shortcuts (A/R) operate on the selected event and are handled
- * by ``useKeyboard`` in VideoPreview, not here. This panel handles click-based
- * interactions only.
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { CircleDot, FilterX } from 'lucide-react'
 import { bulkUpdateEventStatus, updateEventStatus } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import type { EventStatus, PiiType, RedactionEvent } from '../../types'
+import { formatMs } from '../../utils/format'
 
 /** Props for the FindingsPanel component. */
 interface Props {
@@ -31,15 +22,9 @@ interface Props {
 /** All valid PII types for the filter dropdown. */
 const PII_TYPES: PiiType[] = [
   'phone', 'email', 'person', 'address', 'credit_card',
-  'ssn', 'account_id', 'employee_id', 'postal_code', 'username', 'custom', 'manual', 'unknown',
+  'ssn', 'account_id', 'employee_id', 'postal_code', 'username', 'face', 'custom', 'manual', 'unknown',
 ]
 
-/**
- * Left pane: filterable, sortable list of all detected PII events.
- *
- * Connects to the Zustand store for events and selection state. Calls the API
- * directly to persist accept/reject decisions.
- */
 export function FindingsPanel({ style }: Props) {
   const {
     project, events, selectedEventId, selectEvent,
@@ -61,23 +46,22 @@ export function FindingsPanel({ style }: Props) {
   const [filterStatus, setFilterStatus] = useState<EventStatus | 'all'>('all')
   const [sortBy, setSortBy] = useState<'time' | 'confidence'>('time')
 
-  // Apply filters and sort in a single pass
-  const filtered = events
-    .filter((e) => filterType === 'all' || e.pii_type === filterType)
-    .filter((e) => filterStatus === 'all' || e.status === filterStatus)
-    .sort((a, b) =>
-      sortBy === 'confidence'
-        ? b.confidence - a.confidence
-        : (a.time_ranges[0]?.start_ms ?? 0) - (b.time_ranges[0]?.start_ms ?? 0)
-    )
+  // Memoize filter + sort to avoid re-computing on every render
+  const filtered = useMemo(() =>
+    events
+      .filter((e) => filterType === 'all' || e.pii_type === filterType)
+      .filter((e) => filterStatus === 'all' || e.status === filterStatus)
+      .sort((a, b) =>
+        sortBy === 'confidence'
+          ? b.confidence - a.confidence
+          : (a.time_ranges[0]?.start_ms ?? 0) - (b.time_ranges[0]?.start_ms ?? 0)
+      ),
+    [events, filterType, filterStatus, sortBy],
+  )
 
-  /**
-   * Accept or reject an event. Updates the local store immediately for
-   * instant UI feedback, then persists to the backend.
-   */
   const handleStatus = async (e: RedactionEvent, status: EventStatus) => {
     if (!project) return
-    updateLocal(e.event_id, status)  // Optimistic update
+    updateLocal(e.event_id, status)
     await updateEventStatus(project.project_id, e.event_id, status)
   }
 
@@ -101,7 +85,7 @@ export function FindingsPanel({ style }: Props) {
     <div className="glass" style={{ display: 'flex', flexDirection: 'column', borderRadius: 0, ...style }}>
       {/* ── Filters and sort controls ── */}
       <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 'var(--space-2)' }}>
+        <div className="section-header" style={{ paddingBottom: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
           <span style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>Findings ({filtered.length})</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-1)' }}>
             <button
@@ -169,8 +153,8 @@ export function FindingsPanel({ style }: Props) {
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 && (
           <div style={{ padding: 'var(--space-6)', color: 'var(--text-muted)', textAlign: 'center', fontSize: 'var(--font-size-body)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <div style={{ fontSize: 'var(--font-size-section)', opacity: 0.4 }}>
-              {events.length === 0 ? '◎' : '⊘'}
+            <div style={{ opacity: 0.4 }}>
+              {events.length === 0 ? <CircleDot size={32} /> : <FilterX size={32} />}
             </div>
             <div>{events.length === 0 ? 'No findings yet' : 'No matches'}</div>
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>
@@ -200,31 +184,14 @@ export function FindingsPanel({ style }: Props) {
 interface FindingItemProps {
   event: RedactionEvent
   selected: boolean
-  /** Called when the user clicks anywhere on the item row. */
   onSelect: () => void
-  /** Called when the Accept button is clicked. */
   onAccept: () => void
-  /** Called when the Reject button is clicked. */
   onReject: () => void
 }
 
-/**
- * A single row in the findings list.
- *
- * Shows PII type, detected text, time range, and confidence. When selected,
- * expands to show Accept/Reject buttons (for pending events only).
- */
 function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingItemProps) {
-  // Use the first time range for the display timestamp
   const startMs = event.time_ranges[0]?.start_ms ?? 0
   const endMs = event.time_ranges[event.time_ranges.length - 1]?.end_ms ?? 0
-
-  /** Format a millisecond timestamp as "M:SS". */
-  const formatTime = (ms: number) => {
-    const s = Math.floor(ms / 1000)
-    const m = Math.floor(s / 60)
-    return `${m}:${String(s % 60).padStart(2, '0')}`
-  }
 
   const statusColor =
     event.status === 'accepted' ? 'var(--accept)'
@@ -233,15 +200,9 @@ function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingI
 
   return (
     <div
+      className="finding-item"
+      data-selected={selected}
       onClick={onSelect}
-      style={{
-        padding: 'var(--space-3) var(--space-4)',
-        borderBottom: '1px solid var(--border-hairline)',
-        cursor: 'pointer',
-        background: selected ? 'var(--accent-tint)' : 'transparent',
-        borderLeft: selected ? '3px solid var(--accent)' : '3px solid transparent',
-        transition: 'background var(--transition-fast)',
-      }}
     >
       {/* Row header: type tag + status badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
@@ -251,14 +212,14 @@ function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingI
         </span>
       </div>
 
-      {/* Detected text (monospace for legibility of PII like phone numbers) */}
+      {/* Detected text */}
       <div style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', marginBottom: 'var(--space-1)', color: 'var(--text)' }}>
         {event.extracted_text ?? '[secure mode]'}
       </div>
 
       {/* Timestamp range + confidence score + style badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-        <span>{formatTime(startMs)} – {formatTime(endMs)}</span>
+        <span>{formatMs(startMs)} \u2013 {formatMs(endMs)}</span>
         <span>{Math.round(event.confidence * 100)}%</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', padding: '1px 5px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
           {event.redaction_style.type === 'solid_box' ? 'box' : event.redaction_style.type}
@@ -273,14 +234,14 @@ function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingI
             onClick={(e) => { e.stopPropagation(); onAccept() }}
             style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
           >
-            A — Accept
+            A \u2014 Accept
           </button>
           <button
             className="reject"
             onClick={(e) => { e.stopPropagation(); onReject() }}
             style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
           >
-            R — Reject
+            R \u2014 Reject
           </button>
         </div>
       )}

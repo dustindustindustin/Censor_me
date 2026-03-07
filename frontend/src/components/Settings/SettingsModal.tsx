@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import {
   addCustomRule,
   deleteCustomRule,
@@ -32,9 +33,23 @@ type Tab = 'scan' | 'export' | 'rules'
 
 const PII_LABEL_OPTIONS: PiiType[] = [
   'phone', 'email', 'person', 'address', 'credit_card', 'ssn',
-  'account_id', 'employee_id', 'postal_code', 'username', 'custom',
+  'account_id', 'employee_id', 'postal_code', 'username', 'face', 'custom',
 ]
 
+/** PII types that have per-type confidence override sliders. */
+const OVERRIDE_TYPES: { key: string; label: string }[] = [
+  { key: 'phone', label: 'Phone' },
+  { key: 'email', label: 'Email' },
+  { key: 'person', label: 'Person' },
+  { key: 'ssn', label: 'SSN' },
+  { key: 'credit_card', label: 'Credit Card' },
+  { key: 'account_id', label: 'Account ID' },
+  { key: 'face', label: 'Face' },
+]
+
+function rangePct(value: number, min: number, max: number): string {
+  return `${((value - min) / (max - min)) * 100}%`
+}
 
 function LabelBadge({ label }: { label: string | null }) {
   if (!label) return null
@@ -201,7 +216,7 @@ export function SettingsModal({
     }
   }
 
-  const saveBtnLabel = saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Changes'
+  const saveBtnLabel = saving ? 'Saving\u2026' : saved ? '\u2713 Saved' : 'Save Changes'
 
   return (
     <div
@@ -230,35 +245,19 @@ export function SettingsModal({
           flexShrink: 0,
         }}>
           <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Settings</span>
-          <button
-            className="ghost"
-            onClick={onClose}
-            style={{ fontSize: 18, lineHeight: 1, padding: 'var(--space-1)', minHeight: 'auto' }}
-          >
-            ×
+          <button className="modal-close" onClick={onClose}>
+            <X size={16} />
           </button>
         </div>
 
         {/* Tab bar */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-hairline)', flexShrink: 0 }}>
+        <div className="tab-bar">
           {(['scan', 'export', 'rules'] as Tab[]).map((tab) => (
             <button
               key={tab}
+              className="tab-button"
+              data-active={activeTab === tab}
               onClick={() => setActiveTab(tab)}
-              style={{
-                padding: 'var(--space-3) var(--space-6)',
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
-                borderRadius: 0,
-                color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
-                fontWeight: activeTab === tab ? 600 : 400,
-                cursor: 'pointer',
-                fontSize: 'var(--font-size-body)',
-                textTransform: 'capitalize',
-                transition: 'color var(--transition-fast)',
-                minHeight: 'auto',
-              }}
             >
               {tab}
             </button>
@@ -341,7 +340,7 @@ function ScanTab({ scan, onChange }: { scan: ScanSettings; onChange: (s: ScanSet
             type="range" min={0} max={1} step={0.01}
             value={scan.confidence_threshold}
             onChange={(e) => onChange({ ...scan, confidence_threshold: parseFloat(e.target.value) })}
-            style={{ flex: 1 }}
+            style={{ flex: 1, '--value-pct': rangePct(scan.confidence_threshold, 0, 1) } as React.CSSProperties}
           />
           <span style={{ minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: 'var(--font-size-body)' }}>
             {scan.confidence_threshold.toFixed(2)}
@@ -363,14 +362,33 @@ function ScanTab({ scan, onChange }: { scan: ScanSettings; onChange: (s: ScanSet
           value={scan.ocr_resolution_scale}
           onChange={(e) => onChange({ ...scan, ocr_resolution_scale: parseFloat(e.target.value) })}
         >
-          <option value={0.5}>0.5×</option>
-          <option value={1.0}>1× (default)</option>
-          <option value={1.5}>1.5×</option>
-          <option value={2.0}>2×</option>
+          <option value={0.5}>0.5&times;</option>
+          <option value={1.0}>1&times; (default)</option>
+          <option value={1.5}>1.5&times;</option>
+          <option value={2.0}>2&times;</option>
         </select>
       </Field>
 
-      <Field label="Secure mode" hint="When enabled, detected text is never stored in the project file — only bounding boxes and timestamps are saved.">
+      <Field label="Per-type confidence overrides" hint="Override the global threshold for specific PII types. Types not listed here use the global threshold.">
+        <PerTypeOverrides
+          overrides={scan.entity_confidence_overrides ?? {}}
+          globalThreshold={scan.confidence_threshold}
+          onChange={(overrides) => onChange({ ...scan, entity_confidence_overrides: overrides })}
+        />
+      </Field>
+
+      <Field label="Face detection" hint="Detect faces (webcam overlays, profile pictures) in addition to OCR text.">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={scan.detect_faces ?? true}
+            onChange={(e) => onChange({ ...scan, detect_faces: e.target.checked })}
+          />
+          <span style={{ fontSize: 'var(--font-size-body)' }}>Detect faces in video frames</span>
+        </label>
+      </Field>
+
+      <Field label="Secure mode" hint="When enabled, detected text is never stored in the project file \u2014 only bounding boxes and timestamps are saved.">
         <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer' }}>
           <input
             type="checkbox"
@@ -437,7 +455,7 @@ function ExportTab({
               onChange={(e) => onChange({ ...output, custom_width: parseInt(e.target.value) || null })}
               style={{ width: 90 }}
             />
-            <span style={{ color: 'var(--text-muted)' }}>×</span>
+            <span style={{ color: 'var(--text-muted)' }}>&times;</span>
             <input
               type="number" placeholder="Height" min={1}
               value={output.custom_height ?? ''}
@@ -470,7 +488,7 @@ function ExportTab({
                 type="range" min={0} max={51} step={1}
                 value={output.crf}
                 onChange={(e) => onChange({ ...output, crf: parseInt(e.target.value) })}
-                style={{ flex: 1 }}
+                style={{ flex: 1, '--value-pct': rangePct(output.crf, 0, 51) } as React.CSSProperties}
               />
               <span style={{ minWidth: 28, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: 'var(--font-size-body)' }}>
                 {output.crf}
@@ -553,7 +571,7 @@ function RulesTab(p: RulesTabProps) {
   const patternLen = p.newPattern.length
 
   if (p.loading) {
-    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>Loading rules…</div>
+    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>Loading rules\u2026</div>
   }
 
   return (
@@ -660,7 +678,7 @@ function RulesTab(p: RulesTabProps) {
                 type="range" min={0.1} max={1.0} step={0.05}
                 value={p.newConfidence}
                 onChange={(e) => p.setNewConfidence(parseFloat(e.target.value))}
-                style={{ width: '100%' }}
+                style={{ width: '100%', '--value-pct': rangePct(p.newConfidence, 0.1, 1.0) } as React.CSSProperties}
               />
             </Field>
           </div>
@@ -690,7 +708,7 @@ function RulesTab(p: RulesTabProps) {
               value={p.testSample}
               onChange={(e) => p.setTestSample(e.target.value)}
               rows={3}
-              placeholder="Paste sample text here to test the pattern…"
+              placeholder="Paste sample text here to test the pattern\u2026"
               style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', fontSize: 'var(--font-size-small)' }}
             />
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
@@ -699,12 +717,12 @@ function RulesTab(p: RulesTabProps) {
                 disabled={!p.newPattern || !p.testSample || p.testLoading}
                 style={{ padding: 'var(--space-1) var(--space-3)', fontSize: 'var(--font-size-small)' }}
               >
-                {p.testLoading ? 'Testing…' : 'Test Pattern'}
+                {p.testLoading ? 'Testing\u2026' : 'Test Pattern'}
               </button>
               {p.testResult !== null && (
                 <span style={{ fontSize: 'var(--font-size-small)', color: p.testResult.count > 0 ? 'var(--accent)' : 'var(--text-muted)' }}>
                   {p.testResult.count > 0
-                    ? `${p.testResult.count} match${p.testResult.count !== 1 ? 'es' : ''}: ${p.testResult.matches.slice(0, 5).join(', ')}${p.testResult.matches.length > 5 ? '…' : ''}`
+                    ? `${p.testResult.count} match${p.testResult.count !== 1 ? 'es' : ''}: ${p.testResult.matches.slice(0, 5).join(', ')}${p.testResult.matches.length > 5 ? '\u2026' : ''}`
                     : 'No matches found'}
                 </span>
               )}
@@ -723,7 +741,7 @@ function RulesTab(p: RulesTabProps) {
               disabled={!p.newName.trim() || !p.newPattern.trim() || p.addingRule}
               style={{ padding: 'var(--space-2) var(--space-4)' }}
             >
-              {p.addingRule ? 'Saving…' : 'Save Rule'}
+              {p.addingRule ? 'Saving\u2026' : 'Save Rule'}
             </button>
           </div>
         </section>
@@ -776,17 +794,91 @@ function RuleRow({
       </span>
       {!readOnly && (
         <button
+          className="modal-close"
           onClick={onDelete}
           title="Delete rule"
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: 'var(--text-muted)', fontSize: 16, lineHeight: 1, padding: '0 2px',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--reject)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          style={{ width: 24, height: 24 }}
         >
-          ×
+          <X size={14} />
         </button>
+      )}
+    </div>
+  )
+}
+
+// ── Per-type confidence overrides ──────────────────────────────────────────
+
+function PerTypeOverrides({
+  overrides,
+  globalThreshold,
+  onChange,
+}: {
+  overrides: Record<string, number>
+  globalThreshold: number
+  onChange: (overrides: Record<string, number>) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  const getVal = (key: string) => overrides[key] ?? globalThreshold
+
+  const setVal = (key: string, val: number) => {
+    onChange({ ...overrides, [key]: val })
+  }
+
+  const resetVal = (key: string) => {
+    const next = { ...overrides }
+    delete next[key]
+    onChange(next)
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          background: 'none', border: 'none', color: 'var(--accent)',
+          cursor: 'pointer', padding: 0, fontSize: 'var(--font-size-small)',
+          textDecoration: 'underline',
+        }}
+      >
+        {expanded ? 'Hide per-type overrides' : 'Show per-type overrides'}
+      </button>
+      {expanded && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
+          {OVERRIDE_TYPES.map(({ key, label }) => {
+            const val = getVal(key)
+            const isOverridden = key in overrides
+            return (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <span style={{
+                  width: 90, fontSize: 'var(--font-size-small)',
+                  color: isOverridden ? 'var(--text)' : 'var(--text-muted)',
+                  fontWeight: isOverridden ? 600 : 400,
+                }}>
+                  {label}
+                </span>
+                <input
+                  type="range" min={0} max={1} step={0.01}
+                  value={val}
+                  onChange={(e) => setVal(key, parseFloat(e.target.value))}
+                  style={{ flex: 1, '--value-pct': rangePct(val, 0, 1) } as React.CSSProperties}
+                />
+                <span style={{ minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontSize: 'var(--font-size-small)' }}>
+                  {val.toFixed(2)}
+                </span>
+                {isOverridden && (
+                  <button
+                    onClick={() => resetVal(key)}
+                    title="Reset to global threshold"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 2px', fontSize: 'var(--font-size-xs)' }}
+                  >
+                    reset
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
   )
