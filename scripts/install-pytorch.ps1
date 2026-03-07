@@ -41,16 +41,16 @@ Write-Host "==> Detected GPU backend: $GPU"
 switch ($GPU) {
     "cuda" {
         Write-Host "==> Installing PyTorch with CUDA support..."
-        uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+        python -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
     }
     "directml" {
         Write-Host "==> Installing PyTorch + DirectML for AMD GPU..."
-        uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-        uv pip install torch-directml
+        python -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        python -m uv pip install torch-directml
     }
     "cpu" {
         Write-Host "==> Installing PyTorch (CPU-only)..."
-        uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        python -m uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
     }
     default {
         Write-Host "ERROR: Unknown GPU backend '$GPU'. Use: auto, cuda, directml, cpu"
