@@ -12,7 +12,9 @@ Pipeline:
   source_video (audio) ──────────────────────────────────────────────────────→ output
 """
 
+import logging
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -21,6 +23,25 @@ import numpy as np
 
 from backend.models.events import RedactionEvent
 from backend.models.project import OutputSettings
+
+logger = logging.getLogger(__name__)
+
+# Bbox padding: expand each redaction box by this fraction of its size to catch
+# OCR boundary noise (text edges peeking around the censor box).
+_BBOX_PAD_PCT = 0.15
+
+# Temporal padding: extend redaction coverage before the first keyframe and
+# after the last keyframe by this many milliseconds, so the censor box appears
+# slightly before text is visible and lingers slightly after it disappears.
+_TEMPORAL_PAD_MS = 500
+
+# EMA smoothing alpha: controls how much each frame's bbox moves toward the raw
+# tracked position. Lower = smoother but laggier; higher = more responsive.
+_EMA_ALPHA = 0.3
+
+# Merge proximity: bboxes within this many pixels of each other are merged into
+# a single redaction region to avoid thin uncensored strips between adjacent items.
+_MERGE_PROXIMITY_PX = 10
 
 
 class RedactionRenderer:
@@ -74,14 +95,34 @@ class RedactionRenderer:
         )
 
         # Build frame-to-redaction lookup
-        frame_map = self._build_frame_map(events, fps)
+        frame_map = self._build_frame_map(events, fps, width, height)
+        logger.info(
+            "Export starting — source: %s | %dx%d → %dx%d | %.2f fps | %d accepted events | "
+            "%d frames have redaction (%.1f%% of %d total)",
+            source_video.name, width, height, out_width, out_height, fps,
+            len(events), len(frame_map),
+            len(frame_map) / total_frames * 100 if total_frames else 0,
+            total_frames,
+        )
 
-        # Start ffmpeg process (receives raw BGR frames on stdin)
+        # Start ffmpeg process (receives raw BGR frames on stdin).
+        # stderr is drained by a background thread to prevent the OS pipe
+        # buffer (4–64 KB) from filling up and deadlocking the main loop when
+        # ffmpeg writes verbose NVENC warnings or error messages.
         proc = subprocess.Popen(
             ffmpeg_cmd,
             stdin=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        stderr_chunks: list[bytes] = []
+
+        def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            for chunk in iter(lambda: proc.stderr.read(4096), b""):
+                stderr_chunks.append(chunk)
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
 
         frame_idx = 0
         try:
@@ -109,7 +150,12 @@ class RedactionRenderer:
                             )
                         frame = self._apply_redaction(frame, bbox, event.redaction_style)
 
-                proc.stdin.write(frame.tobytes())
+                try:
+                    proc.stdin.write(frame.tobytes())
+                except BrokenPipeError:
+                    # ffmpeg exited early (encoding error); stop writing and
+                    # let the returncode check below surface the real error.
+                    break
 
                 if on_progress and frame_idx % 30 == 0:
                     on_progress(frame_idx, total_frames)
@@ -117,9 +163,15 @@ class RedactionRenderer:
                 frame_idx += 1
         finally:
             cap.release()
-            proc.stdin.close()
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
 
-        _, stderr = proc.communicate()
+        stderr_thread.join(timeout=30)
+        proc.wait()
+        stderr = b"".join(stderr_chunks)
+
         if proc.returncode != 0:
             # Try CPU fallback if NVENC failed
             if gpu_available and b"nvenc" in stderr.lower():
@@ -166,12 +218,15 @@ class RedactionRenderer:
                 "-preset", "p4",
                 "-rc:v", "vbr",
                 "-cq:v", str(output_settings.crf),  # NVENC quality equivalent
+                "-pix_fmt", "yuv420p",
             ]
         else:
             cmd += [
                 "-vcodec", "libx264",
                 "-preset", "fast",
                 "-crf", str(output_settings.crf),
+                "-pix_fmt", "yuv420p",
+                "-threads", "0",
             ]
 
         cmd += [
@@ -182,26 +237,55 @@ class RedactionRenderer:
 
         return cmd
 
+    @staticmethod
+    def _pad_bbox(
+        bbox: tuple[int, int, int, int],
+        frame_w: int,
+        frame_h: int,
+        pad_pct: float = _BBOX_PAD_PCT,
+    ) -> tuple[int, int, int, int]:
+        """Expand a bbox by ``pad_pct`` of its size, clamped to frame bounds."""
+        x, y, w, h = bbox
+        dx = int(w * pad_pct)
+        dy = int(h * pad_pct)
+        x2 = min(frame_w, x + w + dx)
+        y2 = min(frame_h, y + h + dy)
+        x = max(0, x - dx)
+        y = max(0, y - dy)
+        return (x, y, x2 - x, y2 - y)
+
     def _build_frame_map(
         self,
         events: list[RedactionEvent],
         fps: float,
+        frame_w: int = 0,
+        frame_h: int = 0,
     ) -> dict[int, list[tuple[RedactionEvent, tuple[int, int, int, int]]]]:
         """
         Build frame_index → [(event, bbox)] mapping using keyframe interpolation.
-        Only builds entries for frames that have at least one active redaction.
+
+        Applies bbox padding, temporal padding (pre/post hold), and EMA smoothing.
+        Only builds entries for frames that have at least one active redaction
+        AND fall within the event's declared time_ranges (with temporal padding).
         """
         frame_map: dict[int, list] = {}
+        pad_frames = int((_TEMPORAL_PAD_MS / 1000) * fps)
 
         for event in events:
             if not event.keyframes:
                 continue
 
             keyframes = event.keyframes
+
+            # --- Core keyframe + interpolation pass ---
             for i, kf in enumerate(keyframes):
                 frame_idx = int((kf.time_ms / 1000) * fps)
                 bbox = (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h)
-                frame_map.setdefault(frame_idx, []).append((event, bbox))
+                if frame_w > 0 and frame_h > 0:
+                    bbox = self._pad_bbox(bbox, frame_w, frame_h)
+
+                if self._in_time_ranges(frame_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                    frame_map.setdefault(frame_idx, []).append((event, bbox))
 
                 # Interpolate to next keyframe
                 if i < len(keyframes) - 1:
@@ -210,15 +294,139 @@ class RedactionRenderer:
                     steps = next_idx - frame_idx
 
                     for step in range(1, steps):
-                        t = step / steps
-                        interp = self._lerp_bbox(
-                            (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h),
-                            (kf_next.bbox.x, kf_next.bbox.y, kf_next.bbox.w, kf_next.bbox.h),
-                            t,
-                        )
-                        frame_map.setdefault(frame_idx + step, []).append((event, interp))
+                        interp_idx = frame_idx + step
+                        if self._in_time_ranges(interp_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                            t = step / steps
+                            interp = self._lerp_bbox(
+                                (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h),
+                                (kf_next.bbox.x, kf_next.bbox.y, kf_next.bbox.w, kf_next.bbox.h),
+                                t,
+                            )
+                            if frame_w > 0 and frame_h > 0:
+                                interp = self._pad_bbox(interp, frame_w, frame_h)
+                            frame_map.setdefault(interp_idx, []).append((event, interp))
+
+            # --- Temporal pre-pad: hold first bbox before first keyframe ---
+            first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
+            first_bbox = (keyframes[0].bbox.x, keyframes[0].bbox.y,
+                          keyframes[0].bbox.w, keyframes[0].bbox.h)
+            if frame_w > 0 and frame_h > 0:
+                first_bbox = self._pad_bbox(first_bbox, frame_w, frame_h)
+
+            for f in range(max(0, first_kf_frame - pad_frames), first_kf_frame):
+                if f not in frame_map or not any(ev is event for ev, _ in frame_map.get(f, [])):
+                    if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                        frame_map.setdefault(f, []).append((event, first_bbox))
+
+            # --- Temporal post-pad: hold last bbox after last keyframe ---
+            last_kf_frame = int((keyframes[-1].time_ms / 1000) * fps)
+            last_bbox = (keyframes[-1].bbox.x, keyframes[-1].bbox.y,
+                         keyframes[-1].bbox.w, keyframes[-1].bbox.h)
+            if frame_w > 0 and frame_h > 0:
+                last_bbox = self._pad_bbox(last_bbox, frame_w, frame_h)
+
+            for f in range(last_kf_frame + 1, last_kf_frame + pad_frames + 1):
+                if f not in frame_map or not any(ev is event for ev, _ in frame_map.get(f, [])):
+                    if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                        frame_map.setdefault(f, []).append((event, last_bbox))
+
+        # --- EMA smoothing per event ---
+        self._smooth_event_bboxes(frame_map, events)
+
+        # --- Merge overlapping bboxes per frame ---
+        for fidx in frame_map:
+            if len(frame_map[fidx]) > 1:
+                frame_map[fidx] = self._merge_overlapping(frame_map[fidx])
 
         return frame_map
+
+    @staticmethod
+    def _in_time_ranges(frame_idx: int, time_ranges: list, fps: float, pad_ms: int = 0) -> bool:
+        """
+        Return True if frame_idx falls within any of the event's declared time ranges.
+
+        If time_ranges is empty, returns True (backwards-compatible: no declared
+        ranges means the redaction is active for the entire video).
+        """
+        if not time_ranges:
+            return True
+        for tr in time_ranges:
+            start = int(((tr.start_ms - pad_ms) / 1000) * fps)
+            end   = int(((tr.end_ms   + pad_ms) / 1000) * fps)
+            if start <= frame_idx <= end:
+                return True
+        return False
+
+    @staticmethod
+    def _smooth_event_bboxes(
+        frame_map: dict[int, list],
+        events: list[RedactionEvent],
+    ) -> None:
+        """Apply EMA smoothing to each event's bbox sequence in frame_map."""
+        for event in events:
+            # Collect sorted frame indices where this event appears
+            event_frames: list[int] = []
+            for fidx in sorted(frame_map.keys()):
+                for entry_idx, (ev, _bbox) in enumerate(frame_map[fidx]):
+                    if ev is event:
+                        event_frames.append((fidx, entry_idx))
+                        break
+
+            if len(event_frames) < 2:
+                continue
+
+            # Forward EMA pass
+            prev = frame_map[event_frames[0][0]][event_frames[0][1]][1]
+            for fidx, entry_idx in event_frames[1:]:
+                ev, raw = frame_map[fidx][entry_idx]
+                smoothed = tuple(
+                    int(_EMA_ALPHA * raw[i] + (1 - _EMA_ALPHA) * prev[i])
+                    for i in range(4)
+                )
+                frame_map[fidx][entry_idx] = (ev, smoothed)
+                prev = smoothed
+
+    @staticmethod
+    def _merge_overlapping(
+        entries: list[tuple[RedactionEvent, tuple[int, int, int, int]]],
+    ) -> list[tuple[RedactionEvent, tuple[int, int, int, int]]]:
+        """Merge bboxes that overlap or are within _MERGE_PROXIMITY_PX."""
+        if len(entries) <= 1:
+            return entries
+
+        def _close(a: tuple, b: tuple) -> bool:
+            ax, ay, aw, ah = a
+            bx, by, bw, bh = b
+            # Expand each bbox by proximity margin and check overlap
+            gap = _MERGE_PROXIMITY_PX
+            return not (ax + aw + gap < bx or bx + bw + gap < ax or
+                        ay + ah + gap < by or by + bh + gap < ay)
+
+        def _union(a: tuple, b: tuple) -> tuple:
+            ax, ay, aw, ah = a
+            bx, by, bw, bh = b
+            x1 = min(ax, bx)
+            y1 = min(ay, by)
+            x2 = max(ax + aw, bx + bw)
+            y2 = max(ay + ah, by + bh)
+            return (x1, y1, x2 - x1, y2 - y1)
+
+        result = list(entries)
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(result)):
+                for j in range(i + 1, len(result)):
+                    if _close(result[i][1], result[j][1]):
+                        union = _union(result[i][1], result[j][1])
+                        keep = result[i] if result[i][0].confidence >= result[j][0].confidence else result[j]
+                        result[i] = (keep[0], union)
+                        result.pop(j)
+                        merged = True
+                        break
+                if merged:
+                    break
+        return result
 
     def _apply_redaction(
         self,
@@ -255,7 +463,9 @@ class RedactionRenderer:
         else:  # solid_box
             color_hex = getattr(style, "color", "#000000").lstrip("#")
             r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
-            redacted = np.full_like(roi, (b, g, r))  # OpenCV uses BGR
+            # np.full_like with a tuple fill_value is undefined for uint8 arrays;
+            # np.full with an explicit shape correctly broadcasts (B, G, R) per pixel.
+            redacted = np.full(roi.shape, (b, g, r), dtype=roi.dtype)  # OpenCV uses BGR
 
         frame[y:y2, x:x2] = redacted
         return frame
@@ -266,22 +476,31 @@ class RedactionRenderer:
         src_h: int,
         settings: OutputSettings,
     ) -> tuple[int, int]:
-        """Calculate output dimensions based on resolution setting."""
+        """Calculate output dimensions based on resolution setting.
+
+        All returned dimensions are rounded to the nearest even integer so that
+        libx264/NVENC can produce yuv420p output without 'not divisible by 2' errors.
+        """
+        def _even(n: float) -> int:
+            """Round to the nearest even integer (required by yuv420p)."""
+            return max(2, round(n / 2) * 2)
+
         res = settings.resolution
         if res == "match_input":
-            return src_w, src_h
+            # Source may itself have odd dimensions; clamp just in case.
+            return _even(src_w), _even(src_h)
         if res == "720p":
             scale = 720 / src_h
-            return int(src_w * scale), 720
+            return _even(src_w * scale), 720
         if res == "1080p":
             scale = 1080 / src_h
-            return int(src_w * scale), 1080
+            return _even(src_w * scale), 1080
         if res == "4K":
             scale = 2160 / src_h
-            return int(src_w * scale), 2160
+            return _even(src_w * scale), 2160
         if res == "custom" and settings.custom_width and settings.custom_height:
-            return settings.custom_width, settings.custom_height
-        return src_w, src_h
+            return _even(settings.custom_width), _even(settings.custom_height)
+        return _even(src_w), _even(src_h)
 
     @staticmethod
     def _lerp_bbox(

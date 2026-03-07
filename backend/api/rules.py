@@ -1,7 +1,11 @@
 """Rules management API."""
 
 import concurrent.futures
+import json
+import logging
+import os
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -11,6 +15,31 @@ MAX_PATTERN_LEN = 500
 MAX_SAMPLE_LEN = 10_000
 
 router = APIRouter()
+
+PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
+
+_log = logging.getLogger(__name__)
+
+
+def _rules_file() -> Path:
+    return PROJECTS_DIR / "custom_rules.json"
+
+
+def _load_custom_rules() -> list[Rule]:
+    f = _rules_file()
+    if not f.exists():
+        return []
+    try:
+        return [Rule.model_validate(r) for r in json.loads(f.read_text())]
+    except Exception:
+        _log.warning("Failed to load custom_rules.json, starting empty")
+        return []
+
+
+def _save_custom_rules() -> None:
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    _rules_file().write_text(json.dumps([r.model_dump() for r in _custom_rules], indent=2))
+
 
 # Default built-in rules (shipped with app)
 _DEFAULT_RULES: list[Rule] = [
@@ -65,8 +94,7 @@ _DEFAULT_RULES: list[Rule] = [
     ),
 ]
 
-# In-memory custom rules (persist to disk in v0.2)
-_custom_rules: list[Rule] = []
+_custom_rules: list[Rule] = _load_custom_rules()
 
 
 def get_all_rules() -> list[Rule]:
@@ -87,6 +115,7 @@ async def get_rules() -> dict:
 async def add_custom_rule(rule: Rule) -> dict:
     """Add a custom rule."""
     _custom_rules.append(rule)
+    _save_custom_rules()
     return {"added": rule.rule_id}
 
 
@@ -98,7 +127,21 @@ async def delete_custom_rule(rule_id: str) -> dict:
     _custom_rules = [r for r in _custom_rules if r.rule_id != rule_id]
     if len(_custom_rules) == before:
         raise HTTPException(status_code=404, detail="Rule not found")
+    _save_custom_rules()
     return {"deleted": rule_id}
+
+
+@router.patch("/custom/{rule_id}")
+async def update_custom_rule(rule_id: str, body: dict) -> dict:
+    """Patch a custom rule (e.g. toggle enabled, update name/pattern)."""
+    for i, rule in enumerate(_custom_rules):
+        if rule.rule_id == rule_id:
+            merged = rule.model_dump() | {k: v for k, v in body.items() if k != "rule_id"}
+            updated = Rule.model_validate(merged)
+            _custom_rules[i] = updated
+            _save_custom_rules()
+            return updated.model_dump()
+    raise HTTPException(status_code=404, detail="Rule not found")
 
 
 @router.post("/test")

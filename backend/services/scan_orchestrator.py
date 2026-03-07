@@ -55,6 +55,7 @@ class ScanOrchestrator:
         emit: Callable[[dict], None],
         use_gpu: bool = False,
         rules: list[dict] | None = None,
+        frame_range: tuple[int, int] | None = None,
     ) -> None:
         """
         Args:
@@ -65,11 +66,14 @@ class ScanOrchestrator:
             use_gpu:     Whether GPU acceleration is available for OCR inference.
             rules:       Serialized Rule dicts from the rules API (default + custom).
                          Passed to PiiClassifier for regex rule evaluation.
+            frame_range: Optional (start_frame, end_frame) tuple (inclusive) to limit
+                         which frames are OCR-sampled. None means scan the full video.
         """
         self._project = project
         self._project_dir = project_dir
         self._emit = emit
         self._use_gpu = use_gpu
+        self._frame_range = frame_range
 
         self._video_svc = VideoService()
         self._ocr = OcrService(use_gpu=use_gpu)
@@ -123,9 +127,22 @@ class ScanOrchestrator:
             burst_interval=max(1, interval // 2),
         )
         frame_indices = sampler.plan()
+
+        # Filter to declared frame range if one was specified (range scan mode)
+        if self._frame_range:
+            start_f, end_f = self._frame_range
+            frame_indices = [f for f in frame_indices if start_f <= f <= end_f]
+
         ocr_frame_count = len(frame_indices)
 
         self._emit({"stage": "starting", "total_ocr_frames": ocr_frame_count})
+
+        # --- Eagerly warm up Presidio before the OCR loop ---
+        # _get_analyzer() loads the spaCy NLP model (~3–5 s). Warming it up here
+        # prevents the first OCR frame from stalling while the model initializes,
+        # and emits a meaningful stage label the frontend can display.
+        self._emit({"stage": "warming_up", "message": "Loading NLP models…"})
+        await asyncio.to_thread(self._classifier._get_analyzer)
 
         # --- Stages 2–3: OCR + PII classification (combined per frame) ---
         all_candidates = []
@@ -151,11 +168,36 @@ class ScanOrchestrator:
             # the asyncio event loop if called directly in a coroutine.
             ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
 
+            # If the frame was scaled for OCR, convert bboxes back to source pixel
+            # coordinates so that keyframes, tracking, and the renderer all operate
+            # in the same coordinate space as the original video.
+            if scale != 1.0:
+                from backend.services.ocr_service import BoxResult as _BoxResult
+                ocr_results = [
+                    _BoxResult(
+                        bbox=(
+                            int(r.bbox[0] / scale),
+                            int(r.bbox[1] / scale),
+                            int(r.bbox[2] / scale),
+                            int(r.bbox[3] / scale),
+                        ),
+                        text=r.text,
+                        confidence=r.confidence,
+                    )
+                    for r in ocr_results
+                ]
+
             # Stage 3: classify detected text as PII or non-PII
             candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
             all_candidates.extend(candidates)
+            del frame  # release 6–32 MB immediately; don't wait for GC
 
             processed += 1
+
+            # Periodically flush PyTorch's CUDA allocator cache to keep VRAM
+            # usage stable across long scans on lower-VRAM GPUs (4–6 GB).
+            if self._use_gpu and processed % 20 == 0:
+                self._ocr.flush_gpu_cache()
             self._emit({
                 "stage": "ocr",
                 "frame": frame_idx,
@@ -163,6 +205,15 @@ class ScanOrchestrator:
                 "ocr_boxes": len(ocr_results),
                 "findings_so_far": len(all_candidates),
                 "progress_pct": int((processed / ocr_frame_count) * 100),
+                # Bboxes of PII found on this frame — used by the frontend to seek
+                # the video and draw a live scan preview with censor bars.
+                "scan_boxes": [
+                    {
+                        "bbox": list(c.bbox),
+                        "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
+                    }
+                    for c in candidates
+                ],
             })
 
             # Yield to the event loop so that WebSocket messages can be flushed
@@ -188,18 +239,106 @@ class ScanOrchestrator:
             )
 
         # --- Stage 4: Link per-frame candidates into time-range events ---
-        self._emit({"stage": "linking", "total_candidates": len(all_candidates)})
-        events = link_candidates(all_candidates)
+        total_candidates = len(all_candidates)
+        self._emit({"stage": "linking", "total_candidates": total_candidates})
+
+        def _link_progress(processed: int, total: int) -> None:
+            pct = int((processed / total) * 100) if total else 0
+            self._emit({
+                "stage": "linking",
+                "total_candidates": total,
+                "progress_pct": min(pct, 100),
+            })
+
+        events = link_candidates(all_candidates, on_progress=_link_progress)
         self._emit({"stage": "link_done", "events_found": len(events)})
 
+        # --- Stage 4.5: Boundary Refinement ---
+        # Sample extra frames near detection boundaries to catch text that
+        # appears/disappears between the regular sample interval.
+        sampled_set = set(frame_indices)
+        boundary_frames: set[int] = set()
+        for evt in events:
+            for tr in evt.time_ranges:
+                start_f = int((tr.start_ms / 1000) * fps)
+                end_f = int((tr.end_ms / 1000) * fps)
+                for offset in range(1, 11):
+                    bf = start_f - offset
+                    if bf >= 0 and bf not in sampled_set:
+                        boundary_frames.add(bf)
+                    ef = end_f + offset
+                    if ef not in sampled_set:
+                        boundary_frames.add(ef)
+
+        refine_frames = sorted(boundary_frames - sampled_set)
+        if 5 <= len(refine_frames) <= 500:
+            self._emit({"stage": "refining", "total_refine_frames": len(refine_frames)})
+            refine_candidates = []
+            cap2 = cv2.VideoCapture(str(video_path))
+
+            for ri, rf_idx in enumerate(refine_frames):
+                cap2.set(cv2.CAP_PROP_POS_FRAMES, rf_idx)
+                ret, frame = cap2.read()
+                if not ret:
+                    continue
+
+                if scale != 1.0:
+                    h, w = frame.shape[:2]
+                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+                time_ms = int((rf_idx / fps) * 1000)
+                ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
+
+                if scale != 1.0:
+                    from backend.services.ocr_service import BoxResult as _BoxResult
+                    ocr_results = [
+                        _BoxResult(
+                            bbox=(int(r.bbox[0] / scale), int(r.bbox[1] / scale),
+                                  int(r.bbox[2] / scale), int(r.bbox[3] / scale)),
+                            text=r.text, confidence=r.confidence,
+                        )
+                        for r in ocr_results
+                    ]
+
+                candidates = self._classifier.classify(ocr_results, rf_idx, time_ms)
+                refine_candidates.extend(candidates)
+                del frame
+
+                if (ri + 1) % 10 == 0:
+                    pct = int(((ri + 1) / len(refine_frames)) * 100)
+                    self._emit({"stage": "refining", "progress_pct": min(pct, 100)})
+
+                await asyncio.sleep(0)
+
+            cap2.release()
+
+            if refine_candidates:
+                all_candidates.extend(refine_candidates)
+                events = link_candidates(all_candidates, on_progress=_link_progress)
+                self._emit({"stage": "refine_done", "events_found": len(events),
+                             "extra_candidates": len(refine_candidates)})
+
         # --- Stage 5: Track bboxes between OCR keyframes ---
+        # track_all_events() opens the video once and processes all events in a
+        # single sequential pass — O(1) video opens vs. O(N_events) in the naive
+        # per-event loop. For 50 events this is typically 10–50× faster.
         self._emit({"stage": "tracking", "total_events": len(events)})
-        tracked_events = []
-        for event in events:
-            tracked = self._tracker.track_event(event, str(video_path), fps)
-            tracked_events.append(tracked)
-            self._emit({"stage": "track", "event_id": tracked.event_id})
-            # Yield to event loop so WebSocket remains responsive during tracking
-            await asyncio.sleep(0)
+
+        def _track_progress(frames_done: int, total_frames: int, active_trackers: int, time_ms: int) -> None:
+            pct = int((frames_done / total_frames) * 100) if total_frames else 0
+            self._emit({
+                "stage": "track",
+                "frames_done": frames_done,
+                "total_frames": total_frames,
+                "active_trackers": active_trackers,
+                "progress_pct": min(pct, 100),
+                "time_ms": time_ms,
+            })
+
+        tracked_events = await asyncio.to_thread(
+            self._tracker.track_all_events, events, str(video_path), fps,
+            on_progress=_track_progress,
+        )
+        self._emit({"stage": "track_done"})
 
         return tracked_events

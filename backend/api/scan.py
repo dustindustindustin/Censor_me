@@ -27,9 +27,9 @@ router = APIRouter()
 # In-memory scan registry keyed by scan_id
 _active_scans: dict[str, dict] = {}
 
-# Tracks which project_ids currently have a scan running (queued or running).
-# Prevents duplicate concurrent scans for the same project.
-_scanning_projects: set[str] = set()
+# Maps project_id → scan_id for any scan that is currently queued or running.
+# Used to prevent duplicate scans and to reconnect clients that navigated away.
+_scanning_projects: dict[str, str] = {}
 
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
 
@@ -50,7 +50,10 @@ async def start_scan(project_id: str, request: Request):
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
     if project_id in _scanning_projects:
-        raise HTTPException(status_code=409, detail="A scan is already running for this project")
+        # A scan is already running — return the existing scan_id so the client
+        # can reconnect to the WebSocket and catch up on buffered progress events.
+        existing_scan_id = _scanning_projects[project_id]
+        return {"scan_id": existing_scan_id, "resumed": True}
 
     # Read GPU availability from app state (set during startup)
     gpu_info = getattr(request.app.state, "gpu", None)
@@ -62,11 +65,11 @@ async def start_scan(project_id: str, request: Request):
         "status": "queued",
         "progress": [],
     }
-    _scanning_projects.add(project_id)
+    _scanning_projects[project_id] = scan_id
 
     asyncio.create_task(_run_scan(scan_id, project, project_dir, use_gpu))
 
-    return {"scan_id": scan_id}
+    return {"scan_id": scan_id, "resumed": False}
 
 
 @router.websocket("/progress/{scan_id}")
@@ -107,6 +110,25 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
             await websocket.close()
         except RuntimeError:
             pass  # Client already closed the connection
+
+
+@router.get("/active/{project_id}")
+async def get_active_scan(project_id: str):
+    """
+    Return the running scan_id for a project, if one exists.
+
+    The frontend calls this when re-opening a project to detect whether a scan
+    is still in progress (e.g., after the user navigated away mid-scan). If an
+    active scan is found, the client can open the WebSocket and catch up on
+    buffered progress events without starting a new scan.
+
+    Returns 404 if no scan is currently running for this project.
+    """
+    scan_id = _scanning_projects.get(project_id)
+    if scan_id is None:
+        raise HTTPException(status_code=404, detail="No active scan for this project")
+    scan = _active_scans.get(scan_id, {})
+    return {"scan_id": scan_id, "status": scan.get("status", "unknown")}
 
 
 @router.get("/status/{scan_id}")
@@ -270,17 +292,19 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
 
 
 @router.post("/track-event/{project_id}/{event_id}")
-async def track_manual_event(project_id: str, event_id: str):
+async def track_manual_event(project_id: str, event_id: str, static: bool = False):
     """
-    Run CSRT tracking forward from a manually-drawn single-keyframe event.
+    Run tracking on a manually-drawn single-keyframe event.
 
-    After a user draws a box on the canvas, that event has only one keyframe
-    at the drawn frame. This endpoint runs the tracker forward from that keyframe
-    until drift, failure, or video end, densifying the keyframes so the redaction
-    follows the on-screen content.
+    Modes:
+    - static=False (default): Bidirectional CSRT tracking. Tracks forward from
+      the drawn keyframe, then backward to find where the content first appeared.
+    - static=True: Pin the box at a fixed position for the entire video duration
+      (no CSRT tracking). Useful for logos, watermarks, or static text.
 
     Returns the updated RedactionEvent with densified keyframes and time_ranges.
     """
+    from backend.models.events import TimeRange
     from backend.services.tracker_service import TrackerService
 
     project_dir = PROJECTS_DIR / project_id
@@ -300,18 +324,201 @@ async def track_manual_event(project_id: str, event_id: str):
         raise HTTPException(status_code=422, detail=f"Source video not found: {video_path}")
 
     fps = project.video.fps
-    tracker = TrackerService()
 
-    tracked = await asyncio.to_thread(tracker.track_forward, event, str(video_path), fps)
+    if static:
+        # Pin mode: fixed position, full video duration, no tracking
+        event.time_ranges = [TimeRange(start_ms=0, end_ms=project.video.duration_ms)]
+        event.tracking_method = "none"
+    else:
+        # Bidirectional tracking: forward then backward
+        tracker = TrackerService()
+        event = await asyncio.to_thread(tracker.track_forward, event, str(video_path), fps)
+        event = await asyncio.to_thread(tracker.track_backward, event, str(video_path), fps)
 
     # Persist the updated event
     for i, e in enumerate(project.events):
         if e.event_id == event_id:
-            project.events[i] = tracked
+            project.events[i] = event
             break
     project.save(project_dir)
 
-    return tracked.model_dump()
+    return event.model_dump()
+
+
+@router.post("/frame/{project_id}")
+async def scan_single_frame(project_id: str, request: Request, frame_index: int = 0):
+    """
+    Scan a single frame for PII and save results as pending RedactionEvents.
+
+    Unlike /test-frame (diagnostic only, no side effects), this endpoint creates
+    real, persistent RedactionEvent objects and appends them to the project.
+    Use this to calibrate detection on a specific frame before a full scan.
+
+    Query params:
+        frame_index: Which frame to scan (default: 0).
+
+    Returns:
+        {"events": [...], "frame_index": N, "count": K}
+    """
+    from backend.models.events import BoundingBox, EventStatus, Keyframe, RedactionEvent, TimeRange
+    from backend.services.ocr_service import OcrService
+    from backend.services.pii_classifier import PiiClassifier
+    from backend.services.tracker_service import TrackerService
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = ProjectFile.load(project_dir)
+    if not project.video:
+        raise HTTPException(status_code=422, detail="No video imported for this project")
+
+    video_path = Path(project.video.path)
+    if not video_path.exists():
+        raise HTTPException(status_code=422, detail=f"Source video not found: {video_path}")
+
+    gpu_info = getattr(request.app.state, "gpu", None)
+    use_gpu = gpu_info.cuda_available if gpu_info else False
+
+    def _run():
+        cap = cv2.VideoCapture(str(video_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
+
+        safe_idx = min(frame_index, max(0, total_frames - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            return [], fps
+
+        time_ms = int((safe_idx / fps) * 1000)
+
+        ocr = OcrService(use_gpu=use_gpu)
+        ocr_results = ocr.process_frame(frame)
+
+        rules = [r.model_dump() for r in get_all_rules()]
+        classifier = PiiClassifier(confidence_threshold=project.scan_settings.confidence_threshold)
+        classifier.set_custom_rules(rules)
+        candidates = classifier.classify(ocr_results, safe_idx, time_ms)
+
+        new_events = []
+        tracker = TrackerService()
+        for c in candidates:
+            bx, by, bw, bh = c.bbox
+            event = RedactionEvent(
+                source="auto",
+                pii_type=c.pii_type,
+                confidence=c.confidence,
+                extracted_text=c.text if not project.scan_settings.secure_mode else None,
+                time_ranges=[TimeRange(start_ms=time_ms, end_ms=time_ms)],
+                keyframes=[Keyframe(time_ms=time_ms, bbox=BoundingBox(x=bx, y=by, w=bw, h=bh))],
+                tracking_method="csrt",
+                status="pending",
+            )
+            # track_event is a no-op for single-keyframe events; included for future compat
+            tracked = tracker.track_event(event, str(video_path), fps)
+            new_events.append(tracked)
+
+        return new_events, fps
+
+    new_events, _fps = await asyncio.to_thread(_run)
+
+    # Reload before appending to avoid clobbering any concurrent writes
+    fresh = ProjectFile.load(project_dir)
+    fresh.events.extend(new_events)
+    fresh.save(project_dir)
+
+    return {
+        "events": [e.model_dump() for e in new_events],
+        "frame_index": frame_index,
+        "count": len(new_events),
+    }
+
+
+@router.post("/range/{project_id}")
+async def start_range_scan(project_id: str, request: Request, start_ms: int = 0, end_ms: int = 0):
+    """
+    Start a partial scan covering only the given time range (start_ms to end_ms).
+
+    Runs the full OCR+PII pipeline but limits FrameSampler output to frames
+    within [start_ms, end_ms]. New events are appended to the project (existing
+    events from other time ranges are preserved).
+
+    Returns a scan_id immediately. Connect to WS /scan/progress/{scan_id} for progress.
+    """
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = ProjectFile.load(project_dir)
+    if not project.video:
+        raise HTTPException(status_code=422, detail="No video imported for this project")
+
+    if project_id in _scanning_projects:
+        existing_scan_id = _scanning_projects[project_id]
+        return {"scan_id": existing_scan_id, "resumed": True}
+
+    fps = project.video.fps
+    start_frame = int((start_ms / 1000) * fps)
+    end_frame = int((end_ms / 1000) * fps)
+
+    gpu_info = getattr(request.app.state, "gpu", None)
+    use_gpu = gpu_info.cuda_available if gpu_info else False
+
+    scan_id = str(uuid.uuid4())
+    _active_scans[scan_id] = {
+        "project_id": project_id,
+        "status": "queued",
+        "progress": [],
+    }
+    _scanning_projects[project_id] = scan_id
+
+    asyncio.create_task(
+        _run_range_scan(scan_id, project, project_dir, use_gpu, start_frame, end_frame)
+    )
+
+    return {"scan_id": scan_id, "resumed": False}
+
+
+async def _run_range_scan(
+    scan_id: str,
+    project: ProjectFile,
+    project_dir: Path,
+    use_gpu: bool,
+    start_frame: int,
+    end_frame: int,
+) -> None:
+    """Run a range-limited scan and append new events without replacing existing ones."""
+    scan = _active_scans[scan_id]
+    scan["status"] = "running"
+
+    def emit(event: dict) -> None:
+        scan["progress"].append(event)
+
+    try:
+        rules = [r.model_dump() for r in get_all_rules()]
+        orchestrator = ScanOrchestrator(
+            project, project_dir, emit, use_gpu=use_gpu, rules=rules,
+            frame_range=(start_frame, end_frame),
+        )
+        new_events = await orchestrator.run()
+
+        # Reload project and append (preserves events outside the scanned range)
+        fresh = ProjectFile.load(project_dir)
+        fresh.events.extend(new_events)
+        fresh.save(project_dir)
+
+        scan["status"] = "done"
+        emit({"stage": "done", "total_findings": len(new_events)})
+
+    except Exception as e:
+        logger.exception("Range scan %s failed: %s", scan_id, e)
+        scan["status"] = "error"
+        emit({"stage": "error", "message": str(e)})
+    finally:
+        _scanning_projects.pop(scan["project_id"], None)
 
 
 async def _run_scan(
@@ -344,4 +551,4 @@ async def _run_scan(
         scan["status"] = "error"
         emit({"stage": "error", "message": str(e)})
     finally:
-        _scanning_projects.discard(scan["project_id"])
+        _scanning_projects.pop(scan["project_id"], None)

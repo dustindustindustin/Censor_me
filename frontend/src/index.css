@@ -4,71 +4,72 @@
   padding: 0;
 }
 
-:root {
-  --bg: #1a1a1e;
-  --surface: #25252b;
-  --border: #3a3a42;
-  --text: #e8e8ee;
-  --text-muted: #888;
-  --accent: #5b7cf6;
-  --accept: #3dca7e;
-  --reject: #e05252;
-  --pending: #f0a050;
-}
-
 html, body, #root {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
+  font-family: var(--font-family);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height);
 }
 
 button {
   cursor: pointer;
   border: none;
-  border-radius: 4px;
-  padding: 6px 12px;
-  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  min-height: 36px;
+  background: var(--surface-secondary);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--font-size-body);
+  font-family: var(--font-family);
+  transition: all var(--transition-fast);
 }
 
-button:hover {
-  background: var(--border);
+button:hover:not(:disabled) {
+  background: var(--glass-bg-hover);
 }
 
 button.primary {
   background: var(--accent);
   color: #fff;
+  box-shadow: var(--shadow-btn-primary);
 }
 
 button.accept { background: var(--accept); color: #fff; }
 button.reject { background: var(--reject); color: #fff; }
 
 input, select {
-  background: var(--surface);
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 13px;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-body);
+  font-family: var(--font-family);
+  min-height: 36px;
 }
 
 .tag {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 12px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.tag.phone   { background: #3a4a8a; color: #99b3ff; }
-.tag.email   { background: #3a6a3a; color: #99ddaa; }
-.tag.person  { background: #6a3a6a; color: #ddaadd; }
-.tag.address { background: #6a5a2a; color: #ddcc88; }
-.tag.unknown { background: #444;    color: #aaa; }
-.tag.manual  { background: #4a3a6a; color: #ccaaff; }
+.tag.phone       { background: #1E1A2E; color: #B39DDB; }
+.tag.email       { background: #1A2626; color: #80CBC4; }
+.tag.person      { background: #2E1A24; color: #F48FB1; }
+.tag.address     { background: #2A2418; color: #FFD54F; }
+.tag.unknown     { background: #1E2024; color: #78909C; }
+.tag.manual      { background: #1A1E2E; color: #9FA8DA; }
+.tag.credit_card { background: #2A2018; color: #FFAB91; }
+.tag.ssn         { background: #2E1A1E; color: #EF9A9A; }
+.tag.account_id  { background: #1A2428; color: #80DEEA; }
+.tag.employee_id { background: #1E261E; color: #A5D6A7; }
+.tag.postal_code { background: #221E2E; color: #CE93D8; }
+.tag.username    { background: #26261A; color: #DCE775; }
+.tag.custom      { background: #1E2226; color: #90A4AE; }

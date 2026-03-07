@@ -10,6 +10,7 @@
 import { useRef, useState } from 'react'
 import { addEventToProject, testFrame } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
+import { PII_LABEL_COLORS } from '../../styles/theme'
 import type { FrameTestCandidate, FrameTestRawResult, FrameTestResult, RedactionEvent, TestFrameOverlayBox } from '../../types'
 
 interface Props {
@@ -18,21 +19,6 @@ interface Props {
   totalFrames: number
   fps: number
   onClose: () => void
-}
-
-const PII_COLORS: Record<string, string> = {
-  phone: '#4fc3f7',
-  email: '#81c784',
-  person: '#ffb74d',
-  address: '#ce93d8',
-  credit_card: '#ef9a9a',
-  ssn: '#ef9a9a',
-  account_id: '#80cbc4',
-  employee_id: '#a5d6a7',
-  postal_code: '#80cbc4',
-  username: '#fff176',
-  custom: '#b0bec5',
-  unknown: '#546e7a',
 }
 
 function msToTimecode(ms: number): string {
@@ -189,45 +175,42 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
 
   return (
     <div
+      className="modal-backdrop"
       onKeyDown={handleKeyDown}
       style={{
         position: 'fixed', inset: 0, zIndex: 1000,
-        background: 'rgba(0,0,0,0.72)',
+        background: 'rgba(0,0,0,0.65)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div style={{
-        background: 'var(--bg)',
-        border: '1px solid var(--border)',
-        borderRadius: 8,
+      <div className="modal-content" style={{
         width: 640,
         maxHeight: '88vh',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
       }}>
         {/* Header */}
         <div style={{
-          padding: '14px 18px',
-          borderBottom: '1px solid var(--border)',
-          display: 'flex', alignItems: 'center', gap: 10,
+          padding: 'var(--space-4) var(--space-5)',
+          borderBottom: '1px solid var(--border-hairline)',
+          display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
         }}>
-          <div style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>Frame Detection Test</div>
-          <button onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>×</button>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', flex: 1 }}>Frame Detection Test</div>
+          <button className="ghost" onClick={onClose} style={{ fontSize: 18, lineHeight: 1, padding: 'var(--space-1)', minHeight: 'auto' }}>×</button>
         </div>
 
         {/* Frame picker */}
         <div style={{
-          padding: '12px 18px',
+          padding: 'var(--space-3) var(--space-5)',
           borderBottom: '1px solid var(--border)',
-          display: 'flex', alignItems: 'center', gap: 8,
+          display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
         }}>
-          <button onClick={() => handleStep(-30)} title="Back 1 second" style={{ fontSize: 12, padding: '4px 8px' }}>«</button>
-          <button onClick={() => handleStep(-1)} title="Previous frame" style={{ fontSize: 12, padding: '4px 8px' }}>‹</button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Frame</span>
+          <button onClick={() => handleStep(-30)} title="Back 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>«</button>
+          <button onClick={() => handleStep(-1)} title="Previous frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>‹</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>Frame</span>
             <input
               ref={inputRef}
               type="number"
@@ -236,17 +219,17 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
               value={inputValue}
               onChange={(e) => handleFrameChange(e.target.value)}
               style={{
-                width: 80, padding: '4px 8px', fontSize: 13,
+                width: 80, padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--font-size-body)',
                 background: 'var(--surface)', border: '1px solid var(--border)',
-                borderRadius: 4, color: 'var(--text)',
+                borderRadius: 'var(--radius-sm)', color: 'var(--text)',
               }}
             />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>/ {totalFrames - 1}</span>
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>/ {totalFrames - 1}</span>
           </div>
-          <button onClick={() => handleStep(1)} title="Next frame" style={{ fontSize: 12, padding: '4px 8px' }}>›</button>
-          <button onClick={() => handleStep(30)} title="Forward 1 second" style={{ fontSize: 12, padding: '4px 8px' }}>»</button>
+          <button onClick={() => handleStep(1)} title="Next frame" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>›</button>
+          <button onClick={() => handleStep(30)} title="Forward 1 second" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)' }}>»</button>
 
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
+          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginLeft: 'var(--space-1)' }}>
             {msToTimecode(timeMs)}
           </span>
 
@@ -254,25 +237,25 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
             className="primary"
             onClick={() => runTest(frameIndex)}
             disabled={loading}
-            style={{ marginLeft: 'auto', fontSize: 13, padding: '5px 14px' }}
+            style={{ marginLeft: 'auto', fontSize: 'var(--font-size-body)', padding: 'var(--space-2) var(--space-4)' }}
           >
             {loading ? 'Testing…' : 'Run Test'}
           </button>
         </div>
 
         {/* Results */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4) var(--space-5)' }}>
           {loading && (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: '40px 0' }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)', textAlign: 'center', padding: 'var(--space-8) 0' }}>
               Running OCR + Presidio on frame {frameIndex}…
-              <div style={{ fontSize: 11, marginTop: 6 }}>First run loads models — may take 10–30 seconds</div>
+              <div style={{ fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-2)' }}>First run loads models — may take 10–30 seconds</div>
             </div>
           )}
 
           {error && (
             <div style={{
-              background: 'rgba(244,67,54,0.1)', border: '1px solid var(--reject)',
-              borderRadius: 6, padding: '12px 14px', fontSize: 13, color: 'var(--reject)',
+              background: 'var(--reject-tint)', border: '1px solid var(--reject)',
+              borderRadius: 'var(--radius-sm)', padding: 'var(--space-3) var(--space-4)', fontSize: 'var(--font-size-body)', color: 'var(--reject)',
             }}>
               <strong>Request failed:</strong> {error}
             </div>
@@ -282,8 +265,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
             <>
               {result.error && (
                 <div style={{
-                  background: 'rgba(244,67,54,0.1)', border: '1px solid var(--reject)',
-                  borderRadius: 6, padding: '12px 14px', fontSize: 13, color: 'var(--reject)', marginBottom: 14,
+                  background: 'var(--reject-tint)', border: '1px solid var(--reject)',
+                  borderRadius: 'var(--radius-sm)', padding: 'var(--space-3) var(--space-4)', fontSize: 'var(--font-size-body)', color: 'var(--reject)', marginBottom: 'var(--space-4)',
                 }}>
                   <strong>Error:</strong> {result.error}
                 </div>
@@ -301,18 +284,18 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                   </EmptyNote>
                 ) : (
                   <>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
                       Check any text the auto-scan might miss to manually add it to the censor list.
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
                       {result.ocr.boxes.map((box, i) => {
                         const isChecked = selectedOcr.has(i)
                         const isLocked = committed || committing
                         return (
                           <div key={i} style={{
-                            display: 'flex', alignItems: 'center', gap: 10,
-                            padding: '6px 10px', background: 'var(--surface)',
-                            borderRadius: 4, fontSize: 13,
+                            display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
+                            padding: 'var(--space-2) var(--space-3)', background: 'var(--surface-secondary)',
+                            borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-body)',
                             borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
                             opacity: isChecked ? 1 : 0.7,
                             transition: 'opacity 0.15s',
@@ -327,7 +310,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                             />
                             <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{box.text}</span>
                             <ConfBadge value={box.confidence} />
-                            <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                               {box.bbox[2]}×{box.bbox[3]}
                             </span>
                           </div>
@@ -343,15 +326,15 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                 label="PII Detection"
                 badge={result.presidio.kept_count}
                 badgeColor={result.presidio.kept_count > 0 ? 'var(--accept)' : 'var(--text-muted)'}
-                style={{ marginTop: 14 }}
+                style={{ marginTop: 'var(--space-4)' }}
               >
                 {result.presidio.error ? (
                   <div style={{
-                    background: 'rgba(244,67,54,0.1)', border: '1px solid var(--reject)',
-                    borderRadius: 6, padding: '10px 12px', fontSize: 13, color: 'var(--reject)',
+                    background: 'var(--reject-tint)', border: '1px solid var(--reject)',
+                    borderRadius: 'var(--radius-sm)', padding: 'var(--space-3)', fontSize: 'var(--font-size-body)', color: 'var(--reject)',
                   }}>
                     <strong>Presidio error:</strong> {result.presidio.error}
-                    <div style={{ marginTop: 6, color: 'var(--text-muted)' }}>
+                    <div style={{ marginTop: 'var(--space-2)', color: 'var(--text-muted)' }}>
                       Run: <code>python -m spacy download en_core_web_lg</code>
                     </div>
                   </div>
@@ -365,7 +348,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                   </EmptyNote>
                 ) : (
                   <>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
                       Threshold: <strong>{result.presidio.active_threshold.toFixed(2)}</strong>
                       {' · '}Presidio found <strong>{result.presidio.raw_count}</strong> total
                       {' · '}<strong style={{ color: 'var(--accept)' }}>{result.presidio.kept_count}</strong> kept
@@ -381,18 +364,18 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                       </EmptyNote>
                     ) : (
                       <>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                        <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
                           All findings are selected by default. Uncheck any false positives before adding.
                         </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
                           {result.presidio.candidates.map((c, i) => {
                             const isChecked = !excluded.has(i)
                             const isLocked = committed || committing
                             return (
                               <div key={i} style={{
-                                display: 'flex', alignItems: 'center', gap: 10,
-                                padding: '6px 10px', background: 'var(--surface)',
-                                borderRadius: 4, fontSize: 13,
+                                display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
+                                padding: 'var(--space-2) var(--space-3)', background: 'var(--surface-secondary)',
+                                borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-body)',
                                 borderLeft: `3px solid ${isChecked ? 'var(--accent)' : 'var(--border)'}`,
                                 opacity: isChecked ? 1 : 0.45,
                                 transition: 'opacity 0.15s',
@@ -406,8 +389,8 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                                   style={{ cursor: isLocked ? 'default' : 'pointer', accentColor: 'var(--accent)', flexShrink: 0 }}
                                 />
                                 <span style={{
-                                  fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
-                                  color: PII_COLORS[c.pii_type] ?? 'var(--text-muted)',
+                                  fontSize: 'var(--font-size-xs)', fontWeight: 700, letterSpacing: '0.04em',
+                                  color: PII_LABEL_COLORS[c.pii_type] ?? 'var(--text-muted)',
                                   textTransform: 'uppercase', whiteSpace: 'nowrap',
                                 }}>
                                   {c.pii_type}
@@ -435,9 +418,9 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                 const ocrCount = selectedOcr.size
                 const total = piiCount + ocrCount
                 return (
-                  <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+                  <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-4)', borderTop: '1px solid var(--border)' }}>
                     {committed ? (
-                      <div style={{ fontSize: 13, color: 'var(--accept)', fontWeight: 600, textAlign: 'center' }}>
+                      <div style={{ fontSize: 'var(--font-size-body)', color: 'var(--accept)', fontWeight: 600, textAlign: 'center' }}>
                         ✓ Added to censor list
                       </div>
                     ) : (
@@ -445,7 +428,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
                         className="primary"
                         onClick={() => handleAddSelected(result)}
                         disabled={committing || total === 0}
-                        style={{ width: '100%', fontSize: 13 }}
+                        style={{ width: '100%', fontSize: 'var(--font-size-body)' }}
                       >
                         {committing
                           ? 'Adding…'
@@ -481,14 +464,14 @@ function Section({
 }) {
   return (
     <div style={style}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+        <span style={{ fontSize: 'var(--font-size-small)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
           {label}
         </span>
         <span style={{
-          fontSize: 11, fontWeight: 700,
+          fontSize: 'var(--font-size-xs)', fontWeight: 700,
           background: badgeColor, color: '#000',
-          borderRadius: 10, padding: '1px 7px',
+          borderRadius: 'var(--radius-md)', padding: '1px 7px',
           opacity: 0.9,
         }}>
           {badge}
@@ -501,9 +484,9 @@ function Section({
 
 function ConfBadge({ value }: { value: number }) {
   const pct = Math.round(value * 100)
-  const color = pct >= 70 ? 'var(--accept)' : pct >= 40 ? '#ffb74d' : 'var(--reject)'
+  const color = pct >= 70 ? 'var(--accept)' : pct >= 40 ? 'var(--pending)' : 'var(--reject)'
   return (
-    <span style={{ fontSize: 11, fontWeight: 700, color, whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color, whiteSpace: 'nowrap' }}>
       {pct}%
     </span>
   )
@@ -512,9 +495,9 @@ function ConfBadge({ value }: { value: number }) {
 function EmptyNote({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
-      padding: '10px 12px', fontSize: 12,
+      padding: 'var(--space-3)', fontSize: 'var(--font-size-small)',
       color: 'var(--text-muted)', fontStyle: 'italic',
-      background: 'var(--surface)', borderRadius: 4,
+      background: 'var(--surface-secondary)', borderRadius: 'var(--radius-sm)',
     }}>
       {children}
     </div>
@@ -529,28 +512,28 @@ function FilteredSection({ raw }: { raw: FrameTestRawResult[] }) {
       <button
         onClick={() => setOpen((v) => !v)}
         style={{
-          fontSize: 11, color: 'var(--text-muted)', background: 'none',
-          border: 'none', cursor: 'pointer', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 4,
+          fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', background: 'none',
+          border: 'none', cursor: 'pointer', padding: 'var(--space-1) 0', display: 'flex', alignItems: 'center', gap: 'var(--space-1)',
         }}
       >
         <span>{open ? '▾' : '▸'}</span>
         <span>{filtered.length} filtered out (click to inspect)</span>
       </button>
       {open && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 4 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', marginTop: 'var(--space-1)' }}>
           {filtered.map((r, i) => (
             <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '5px 10px', background: 'var(--surface)',
-              borderRadius: 4, fontSize: 12, opacity: 0.6,
+              display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
+              padding: 'var(--space-2) var(--space-3)', background: 'var(--surface-secondary)',
+              borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-small)', opacity: 0.6,
               borderLeft: '3px solid var(--border)',
             }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
                 {r.entity_type}
               </span>
               <span style={{ flex: 1, fontFamily: 'monospace', wordBreak: 'break-all' }}>{r.text}</span>
               <ConfBadge value={r.confidence} />
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', fontStyle: 'italic' }}>
+              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', whiteSpace: 'nowrap', fontStyle: 'italic' }}>
                 {r.skip_reason}
               </span>
             </div>

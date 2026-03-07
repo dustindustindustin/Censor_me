@@ -18,7 +18,7 @@
  */
 
 import { useState } from 'react'
-import { updateEventStatus } from '../../api/client'
+import { bulkUpdateEventStatus, updateEventStatus } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import type { EventStatus, PiiType, RedactionEvent } from '../../types'
 
@@ -41,14 +41,20 @@ const PII_TYPES: PiiType[] = [
  * directly to persist accept/reject decisions.
  */
 export function FindingsPanel({ style }: Props) {
-  const { project, events, selectedEventId, selectEvent, updateEventStatus: updateLocal } =
-    useProjectStore((s) => ({
-      project: s.project,
-      events: s.events,
-      selectedEventId: s.selectedEventId,
-      selectEvent: s.selectEvent,
-      updateEventStatus: s.updateEventStatus,
-    }))
+  const {
+    project, events, selectedEventId, selectEvent,
+    updateEventStatus: updateLocal,
+    bulkUpdateEventStatus: bulkUpdateLocal,
+    scanProgress,
+  } = useProjectStore((s) => ({
+    project: s.project,
+    events: s.events,
+    selectedEventId: s.selectedEventId,
+    selectEvent: s.selectEvent,
+    updateEventStatus: s.updateEventStatus,
+    bulkUpdateEventStatus: s.bulkUpdateEventStatus,
+    scanProgress: s.scanProgress,
+  }))
 
   // Filter and sort state — local to this component (not persisted to project)
   const [filterType, setFilterType] = useState<PiiType | 'all'>('all')
@@ -75,19 +81,55 @@ export function FindingsPanel({ style }: Props) {
     await updateEventStatus(project.project_id, e.event_id, status)
   }
 
+  const handleAcceptAll = async () => {
+    if (!project) return
+    const pendingIds = filtered.filter((e) => e.status === 'pending').map((e) => e.event_id)
+    if (pendingIds.length === 0) return
+    bulkUpdateLocal('accepted', pendingIds)
+    await bulkUpdateEventStatus(project.project_id, 'accepted', pendingIds)
+  }
+
+  const handleRejectAll = async () => {
+    if (!project || filtered.length === 0) return
+    if (!window.confirm(`Reject all ${filtered.length} visible finding(s)?`)) return
+    const ids = filtered.map((e) => e.event_id)
+    bulkUpdateLocal('rejected', ids)
+    await bulkUpdateEventStatus(project.project_id, 'rejected', ids)
+  }
+
   return (
-    <div style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', ...style }}>
+    <div className="glass" style={{ display: 'flex', flexDirection: 'column', borderRadius: 0, ...style }}>
       {/* ── Filters and sort controls ── */}
-      <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>
-          Findings ({filtered.length})
+      <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 'var(--space-2)' }}>
+          <span style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>Findings ({filtered.length})</span>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-1)' }}>
+            <button
+              className="accept"
+              style={{ fontSize: 'var(--font-size-xs)', padding: 'var(--space-1) var(--space-2)', minHeight: 'auto' }}
+              disabled={scanProgress.isRunning || filtered.filter((e) => e.status === 'pending').length === 0}
+              onClick={handleAcceptAll}
+              title="Accept all pending findings in the current filter"
+            >
+              Accept All
+            </button>
+            <button
+              className="reject"
+              style={{ fontSize: 'var(--font-size-xs)', padding: 'var(--space-1) var(--space-2)', minHeight: 'auto' }}
+              disabled={scanProgress.isRunning || filtered.length === 0}
+              onClick={handleRejectAll}
+              title="Reject all visible findings in the current filter"
+            >
+              Reject All
+            </button>
+          </div>
         </div>
 
         {/* PII type filter */}
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value as PiiType | 'all')}
-          style={{ width: '100%', marginBottom: 6 }}
+          style={{ width: '100%', marginBottom: 'var(--space-2)', fontSize: 'var(--font-size-small)', minHeight: 32 }}
           aria-label="Filter by PII type"
         >
           <option value="all">All types</option>
@@ -96,12 +138,12 @@ export function FindingsPanel({ style }: Props) {
           ))}
         </select>
 
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', minWidth: 0 }}>
           {/* Status filter */}
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value as EventStatus | 'all')}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 0, fontSize: 'var(--font-size-small)', minHeight: 32 }}
             aria-label="Filter by status"
           >
             <option value="all">All statuses</option>
@@ -114,11 +156,11 @@ export function FindingsPanel({ style }: Props) {
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'time' | 'confidence')}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 0, fontSize: 'var(--font-size-small)', minHeight: 32 }}
             aria-label="Sort order"
           >
-            <option value="time">Sort: Time</option>
-            <option value="confidence">Sort: Confidence</option>
+            <option value="time">By time</option>
+            <option value="confidence">By confidence</option>
           </select>
         </div>
       </div>
@@ -126,10 +168,16 @@ export function FindingsPanel({ style }: Props) {
       {/* ── Scrollable event list ── */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 && (
-          <div style={{ padding: 20, color: 'var(--text-muted)', textAlign: 'center', fontSize: 13 }}>
-            {events.length === 0
-              ? 'No findings yet. Import a video and click Scan.'
-              : 'No findings match the current filters.'}
+          <div style={{ padding: 'var(--space-6)', color: 'var(--text-muted)', textAlign: 'center', fontSize: 'var(--font-size-body)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <div style={{ fontSize: 'var(--font-size-section)', opacity: 0.4 }}>
+              {events.length === 0 ? '◎' : '⊘'}
+            </div>
+            <div>{events.length === 0 ? 'No findings yet' : 'No matches'}</div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>
+              {events.length === 0
+                ? 'Import a video and click Scan to detect PII.'
+                : 'Try adjusting your filters above.'}
+            </div>
           </div>
         )}
         {filtered.map((event) => (
@@ -187,47 +235,50 @@ function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingI
     <div
       onClick={onSelect}
       style={{
-        padding: '10px 14px',
-        borderBottom: '1px solid var(--border)',
+        padding: 'var(--space-3) var(--space-4)',
+        borderBottom: '1px solid var(--border-hairline)',
         cursor: 'pointer',
-        background: selected ? 'rgba(91, 124, 246, 0.12)' : 'transparent',
-        // Blue left border indicates which finding is loaded in the Inspector
+        background: selected ? 'var(--accent-tint)' : 'transparent',
         borderLeft: selected ? '3px solid var(--accent)' : '3px solid transparent',
+        transition: 'background var(--transition-fast)',
       }}
     >
       {/* Row header: type tag + status badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
         <span className={`tag ${event.pii_type}`}>{event.pii_type}</span>
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: statusColor }}>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', color: statusColor, fontWeight: 500 }}>
           {event.status}
         </span>
       </div>
 
       {/* Detected text (monospace for legibility of PII like phone numbers) */}
-      <div style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 4, color: 'var(--text)' }}>
+      <div style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', marginBottom: 'var(--space-1)', color: 'var(--text)' }}>
         {event.extracted_text ?? '[secure mode]'}
       </div>
 
-      {/* Timestamp range + confidence score */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+      {/* Timestamp range + confidence score + style badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
         <span>{formatTime(startMs)} – {formatTime(endMs)}</span>
         <span>{Math.round(event.confidence * 100)}%</span>
+        <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', padding: '1px 5px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+          {event.redaction_style.type === 'solid_box' ? 'box' : event.redaction_style.type}
+        </span>
       </div>
 
       {/* Accept/Reject buttons — only shown when this item is selected and still pending */}
       {selected && event.status === 'pending' && (
-        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
           <button
             className="accept"
             onClick={(e) => { e.stopPropagation(); onAccept() }}
-            style={{ flex: 1 }}
+            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
           >
             A — Accept
           </button>
           <button
             className="reject"
             onClick={(e) => { e.stopPropagation(); onReject() }}
-            style={{ flex: 1 }}
+            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
           >
             R — Reject
           </button>

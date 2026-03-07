@@ -107,15 +107,33 @@ class OcrService:
         if len(results) < 3:
             upscaled = cv2.resize(frame, None, fx=1.5, fy=1.5)
             enhanced_up = self._enhance_contrast(upscaled)
-            # scale_factor=1.5 so that returned bboxes are in original coordinates
-            up_results = self._run_ocr(enhanced_up, scale_factor=1.5)
-            # Deduplicate by text content to avoid double-counting
-            existing_texts = {r.text.lower() for r in results}
-            for r in up_results:
-                if r.text.lower() not in existing_texts:
-                    results.append(r)
+            try:
+                # scale_factor=1.5 so that returned bboxes are in original coordinates
+                up_results = self._run_ocr(enhanced_up, scale_factor=1.5)
+                # Deduplicate by text content to avoid double-counting
+                existing_texts = {r.text.lower() for r in results}
+                for r in up_results:
+                    if r.text.lower() not in existing_texts:
+                        results.append(r)
+            finally:
+                del upscaled, enhanced_up  # free ~64 MB immediately on 4K source
 
         return results
+
+    def flush_gpu_cache(self) -> None:
+        """Release cached (but unused) GPU memory back to the VRAM pool.
+
+        PyTorch's CUDA allocator retains freed tensors in a pool for fast reuse,
+        which causes VRAM to grow monotonically during long scans. Call this
+        periodically to keep VRAM usage stable. No-op on CPU-only machines.
+        """
+        if not self._use_gpu:
+            return
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass  # Non-fatal; if torch isn't importable here, GPU wasn't used
 
     def _run_ocr(self, frame: np.ndarray, scale_factor: float = 1.0) -> list[BoxResult]:
         """
@@ -176,5 +194,7 @@ class OcrService:
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l = clahe.apply(l)
-        enhanced = cv2.merge([l, a, b])
-        return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        merged = cv2.merge([l, a, b])
+        result = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+        del lab, l, a, b, merged
+        return result

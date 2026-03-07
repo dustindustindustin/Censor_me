@@ -15,7 +15,7 @@
  */
 
 import axios from 'axios'
-import type { FrameTestResult, Project, RedactionEvent, SystemStatus } from '../types'
+import type { FrameTestResult, OutputSettings, Project, RedactionEvent, Rule, ScanSettings, SystemStatus } from '../types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -106,6 +106,23 @@ export async function updateEventStatus(
   })
 }
 
+/**
+ * Accept, reject, or reset multiple events in a single request.
+ *
+ * @param eventIds - Specific event IDs to update, or undefined to apply to ALL events.
+ */
+export async function bulkUpdateEventStatus(
+  projectId: string,
+  status: 'accepted' | 'rejected' | 'pending',
+  eventIds?: string[],
+): Promise<{ updated: number }> {
+  const { data } = await api.patch(`/projects/${projectId}/events/bulk-status`, {
+    status,
+    event_ids: eventIds ?? null,
+  })
+  return data
+}
+
 // ── Video ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -141,13 +158,33 @@ export function proxyVideoUrl(projectId: string): string {
 /**
  * Start the PII detection pipeline for a project.
  *
- * Returns a ``scan_id`` immediately. Connect to the WebSocket returned by
- * ``openScanProgressSocket(scan_id)`` to receive real-time progress events.
- * Results are saved to the project automatically when the scan completes.
+ * Returns a ``scan_id`` immediately. If a scan is already running for this
+ * project (e.g., the user navigated away and came back), returns the existing
+ * scan_id with ``resumed: true`` so the client can reconnect to the WebSocket.
+ *
+ * Connect to the WebSocket returned by ``openScanProgressSocket(scan_id)`` to
+ * receive real-time progress events. Results are saved automatically when done.
  */
-export async function startScan(projectId: string): Promise<{ scan_id: string }> {
+export async function startScan(projectId: string): Promise<{ scan_id: string; resumed: boolean }> {
   const { data } = await api.post(`/scan/start/${projectId}`)
   return data
+}
+
+/**
+ * Check whether a scan is currently running for a project.
+ *
+ * Returns the active scan's id and status, or null if no scan is running.
+ * Used when re-opening a project to auto-reconnect to an in-progress scan.
+ */
+export async function getActiveScan(
+  projectId: string,
+): Promise<{ scan_id: string; status: string } | null> {
+  try {
+    const { data } = await api.get(`/scan/active/${projectId}`)
+    return data
+  } catch {
+    return null  // 404 means no active scan — not an error
+  }
 }
 
 /**
@@ -163,6 +200,23 @@ export function openScanProgressSocket(scanId: string): WebSocket {
   // In dev, Vite's /ws proxy forwards this to ws://localhost:8010/scan/progress/{scanId}.
   const wsBase = window.location.origin.replace(/^http/, 'ws')
   return new WebSocket(`${wsBase}/ws/scan/progress/${scanId}`)
+}
+
+/**
+ * Apply a redaction style to all (or a subset of) events in one request.
+ *
+ * @param eventIds - Specific event IDs to update, or undefined to apply to ALL events.
+ */
+export async function bulkUpdateEventStyle(
+  projectId: string,
+  style: import('../types').RedactionStyle,
+  eventIds?: string[],
+): Promise<{ updated: number }> {
+  const { data } = await api.patch(`/projects/${projectId}/events/bulk-style`, {
+    style,
+    event_ids: eventIds ?? null,
+  })
+  return data
 }
 
 /**
@@ -191,14 +245,18 @@ export async function updateEventKeyframes(
 }
 
 /**
- * Run CSRT tracking forward on a manually-drawn single-keyframe event.
- * Densifies keyframes from the drawn frame to wherever the content disappears.
+ * Run tracking on a manually-drawn single-keyframe event.
+ *
+ * By default, tracks bidirectionally (forward + backward) using CSRT.
+ * Pass { static: true } to pin the box at a fixed position for the full video.
  */
 export async function trackManualEvent(
   projectId: string,
-  eventId: string
+  eventId: string,
+  options?: { static?: boolean },
 ): Promise<import('../types').RedactionEvent> {
   const { data } = await api.post(`/scan/track-event/${projectId}/${eventId}`, null, {
+    params: options,
     timeout: 300_000,  // Tracking a long video can take minutes
   })
   return data
@@ -214,6 +272,87 @@ export async function testFrame(projectId: string, frameIndex: number): Promise<
   const { data } = await api.get(`/scan/test-frame/${projectId}`, {
     params: { frame_index: frameIndex },
     timeout: 120_000,
+  })
+  return data
+}
+
+/**
+ * Scan a single frame for PII and save results as pending RedactionEvents.
+ *
+ * Unlike testFrame() (read-only diagnostic), this creates real events in the project.
+ * Use before a full scan to calibrate detection settings on a specific frame.
+ */
+export async function scanFrame(
+  projectId: string,
+  frameIndex: number,
+): Promise<{ events: RedactionEvent[]; count: number }> {
+  const { data } = await api.post(`/scan/frame/${projectId}`, null, {
+    params: { frame_index: frameIndex },
+    timeout: 120_000,
+  })
+  return data
+}
+
+/**
+ * Start a scan limited to a specific time range (start_ms to end_ms).
+ *
+ * Returns a scan_id immediately. Connect to openScanProgressSocket(scan_id)
+ * for real-time progress. New events are appended to the project (existing
+ * events from other ranges are preserved).
+ */
+export async function startRangeScan(
+  projectId: string,
+  startMs: number,
+  endMs: number,
+): Promise<{ scan_id: string; resumed: boolean }> {
+  const { data } = await api.post(`/scan/range/${projectId}`, null, {
+    params: { start_ms: startMs, end_ms: endMs },
+  })
+  return data
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export async function updateProjectSettings(
+  projectId: string,
+  scan: ScanSettings,
+  output: OutputSettings,
+): Promise<Project> {
+  const { data } = await api.patch(`/projects/${projectId}/settings`, {
+    scan_settings: scan,
+    output_settings: output,
+  })
+  return data
+}
+
+export async function getRules(): Promise<{ default: Rule[]; custom: Rule[] }> {
+  const { data } = await api.get('/rules/')
+  return data
+}
+
+export async function addCustomRule(rule: Rule): Promise<{ added: string }> {
+  const { data } = await api.post('/rules/custom', rule)
+  return data
+}
+
+export async function updateCustomRule(
+  ruleId: string,
+  patch: Partial<Omit<Rule, 'rule_id'>>,
+): Promise<Rule> {
+  const { data } = await api.patch(`/rules/custom/${ruleId}`, patch)
+  return data
+}
+
+export async function deleteCustomRule(ruleId: string): Promise<void> {
+  await api.delete(`/rules/custom/${ruleId}`)
+}
+
+export async function testRule(
+  pattern: string,
+  sampleText: string,
+): Promise<{ matches: string[]; count: number }> {
+  const { data } = await api.post('/rules/test', null, {
+    params: { pattern, sample_text: sampleText },
   })
   return data
 }

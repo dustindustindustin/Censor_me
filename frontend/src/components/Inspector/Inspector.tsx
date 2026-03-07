@@ -4,8 +4,8 @@
  * Handles export with real-time progress via WebSocket.
  */
 
-import { useEffect, useRef } from 'react'
-import { exportDownloadUrl, startExport, updateEventStatus, updateEventStyle } from '../../api/client'
+import { useEffect, useRef, useState } from 'react'
+import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, startExport, startScan, updateEventStatus, updateEventStyle } from '../../api/client'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
 import type { RedactionStyle, RedactionStyleType } from '../../types'
@@ -27,30 +27,107 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
 }
 
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
     updateEventStatus: s.updateEventStatus,
     updateEvent: s.updateEvent,
+    bulkUpdateEventStatus: s.bulkUpdateEventStatus,
+    bulkUpdateEventStyle: s.bulkUpdateEventStyle,
+    scanProgress: s.scanProgress,
+    setScanId: s.setScanId,
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
 
+  // Quick Export state
+  const [quickExportStatus, setQuickExportStatus] = useState<'idle' | 'scanning' | 'accepting' | 'exporting' | 'done' | 'error'>('idle')
+  const [quickExportError, setQuickExportError] = useState<string | null>(null)
+  const quickExportAbort = useRef(false)
+
   // Debounce timers — avoid firing API calls on every pixel of drag/color change
   const strengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const colorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const globalStrengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const globalColorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Global style state — controls the "all bars" section.
+  // Initialized from the first event when a project loads; then user-controlled.
+  const [globalType, setGlobalType] = useState<RedactionStyleType>('blur')
+  const [globalStrength, setGlobalStrength] = useState(15)
+  const [globalColor, setGlobalColor] = useState('#000000')
 
   const event = events.find((e) => e.event_id === selectedEventId)
   const acceptedCount = events.filter((e) => e.status === 'accepted').length
 
-  // Clear debounce timers if event changes to avoid saving to the wrong event
+  // Reset export state when a new scan starts so the export section returns to
+  // idle rather than showing "Export again" from the previous export.
+  useEffect(() => {
+    if (scanProgress.isRunning) {
+      resetExport()
+    }
+  }, [scanProgress.isRunning])
+
+  // Sync global style controls from the first event when the project changes.
+  // Gives sensible defaults without requiring the user to set them from scratch.
+  useEffect(() => {
+    if (events.length === 0) return
+    const s = events[0].redaction_style
+    setGlobalType(s.type)
+    setGlobalStrength(s.strength)
+    setGlobalColor(s.color)
+  }, [project?.project_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear per-event debounce timers if event changes to avoid saving to the wrong event
   useEffect(() => {
     return () => {
       if (strengthTimer.current) clearTimeout(strengthTimer.current)
       if (colorTimer.current) clearTimeout(colorTimer.current)
     }
   }, [selectedEventId])
+
+  // Clear global debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      if (globalStrengthTimer.current) clearTimeout(globalStrengthTimer.current)
+      if (globalColorTimer.current) clearTimeout(globalColorTimer.current)
+    }
+  }, [])
+
+  // ── Global style handlers (apply to all events) ────────────────────────────
+
+  const handleGlobalType = (type: RedactionStyleType) => {
+    if (!project || events.length === 0) return
+    const newStyle: RedactionStyle = { type, strength: globalStrength, color: globalColor }
+    setGlobalType(type)
+    bulkUpdateStyleLocal(newStyle)
+    bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+  }
+
+  const handleGlobalStrength = (value: number) => {
+    if (!project || events.length === 0) return
+    const newStyle: RedactionStyle = { type: globalType, strength: value, color: globalColor }
+    setGlobalStrength(value)
+    bulkUpdateStyleLocal(newStyle)
+    if (globalStrengthTimer.current) clearTimeout(globalStrengthTimer.current)
+    globalStrengthTimer.current = setTimeout(() => {
+      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+    }, 400)
+  }
+
+  const handleGlobalColor = (color: string) => {
+    if (!project || events.length === 0) return
+    const newStyle: RedactionStyle = { type: globalType, strength: globalStrength, color }
+    setGlobalColor(color)
+    bulkUpdateStyleLocal(newStyle)
+    if (globalColorTimer.current) clearTimeout(globalColorTimer.current)
+    globalColorTimer.current = setTimeout(() => {
+      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+    }, 400)
+  }
+
+  // ── Export handlers ─────────────────────────────────────────────────────────
 
   const handleExport = async () => {
     if (!project) return
@@ -60,6 +137,50 @@ export function Inspector({ style }: Props) {
       trackExport(export_id)
     } catch (err: unknown) {
       console.error('Export failed to start:', err)
+    }
+  }
+
+  const handleQuickExport = async () => {
+    if (!project) return
+    quickExportAbort.current = false
+    setQuickExportStatus('scanning')
+    setQuickExportError(null)
+    resetExport()
+
+    try {
+      // Step 1: Start scan
+      const { scan_id } = await startScan(project.project_id)
+      setScanId(scan_id)
+
+      // Step 2: Wait for scan to finish via WebSocket
+      await new Promise<void>((resolve, reject) => {
+        const ws = openScanProgressSocket(scan_id)
+        ws.onmessage = (ev) => {
+          const msg = JSON.parse(ev.data)
+          if (msg.stage === 'done') { ws.close(); resolve() }
+          if (msg.stage === 'error') { ws.close(); reject(new Error(msg.message ?? 'Scan failed')) }
+        }
+        ws.onerror = () => reject(new Error('WebSocket error during scan'))
+      })
+
+      if (quickExportAbort.current) return
+
+      // Step 3: Accept all events
+      setQuickExportStatus('accepting')
+      bulkUpdateLocal('accepted')
+      await bulkUpdateEventStatus(project.project_id, 'accepted')
+
+      // Step 4: Start export
+      setQuickExportStatus('exporting')
+      const { export_id } = await startExport(project.project_id)
+      trackExport(export_id)
+
+      setQuickExportStatus('done')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Quick Export failed'
+      setQuickExportError(msg)
+      setQuickExportStatus('error')
+      console.error('Quick Export error:', err)
     }
   }
 
@@ -112,98 +233,205 @@ export function Inspector({ style }: Props) {
   }
 
   return (
-    <div style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', display: 'flex', flexDirection: 'column', ...style }}>
+    <div className="glass" style={{ display: 'flex', flexDirection: 'column', borderRadius: 0, ...style }}>
       {/* Export section */}
-      <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Export</div>
+      <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
+        <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', marginBottom: 'var(--space-3)' }}>Export</div>
 
         {exportProg.isRunning ? (
           <div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
               Encoding… {exportProg.pct}%
               {exportProg.totalFrames > 0 && (
                 <span> ({exportProg.currentFrame.toLocaleString()} / {exportProg.totalFrames.toLocaleString()} frames)</span>
               )}
             </div>
-            <div style={{ height: 4, background: 'var(--border)', borderRadius: 2 }}>
-              <div style={{ height: '100%', width: `${exportProg.pct}%`, background: 'var(--accent)', borderRadius: 2, transition: 'width 0.3s' }} />
+            <div style={{ height: 4, background: 'var(--border)', borderRadius: 'var(--radius-sm)' }}>
+              <div style={{ height: '100%', width: `${exportProg.pct}%`, background: 'var(--accent)', borderRadius: 'var(--radius-sm)', transition: 'width 0.3s' }} />
             </div>
           </div>
         ) : exportProg.outputPath ? (
           <div>
-            <div style={{ fontSize: 12, color: 'var(--accept)', marginBottom: 8 }}>✓ Export complete</div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--accept)', marginBottom: 'var(--space-2)' }}><span className="checkmark-animate">✓</span> Export complete</div>
             <a
               href={project ? exportDownloadUrl(project.project_id) : '#'}
               download
-              style={{ display: 'block', padding: '6px 12px', background: 'var(--accept)', color: '#fff', borderRadius: 4, textAlign: 'center', fontSize: 13, textDecoration: 'none' }}
+              style={{ display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
             >
               Download Video
             </a>
-            <button onClick={resetExport} style={{ width: '100%', marginTop: 6 }}>Export again</button>
+            <button className="secondary" onClick={resetExport} style={{ width: '100%', marginTop: 'var(--space-2)' }}>Export again</button>
           </div>
         ) : exportProg.error ? (
           <div>
-            <div style={{ fontSize: 12, color: 'var(--reject)', marginBottom: 8 }}>{exportProg.error}</div>
-            <button onClick={handleExport} style={{ width: '100%' }}>Retry</button>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--reject)', marginBottom: 'var(--space-2)' }}>{exportProg.error}</div>
+            <button className="secondary" onClick={handleExport} style={{ width: '100%' }}>Retry</button>
           </div>
         ) : (
           <>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', marginBottom: 'var(--space-2)' }}>
               {acceptedCount} finding{acceptedCount !== 1 ? 's' : ''} accepted
             </div>
-            <button
-              className="primary"
-              onClick={handleExport}
-              disabled={acceptedCount === 0}
-              style={{ width: '100%' }}
-            >
-              Export Redacted Video
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <button
+                className="primary"
+                onClick={handleExport}
+                disabled={acceptedCount === 0 || scanProgress.isRunning || quickExportStatus === 'scanning' || quickExportStatus === 'exporting'}
+                style={{ flex: 1 }}
+              >
+                Export Redacted Video
+              </button>
+              <button
+                className="secondary"
+                onClick={handleQuickExport}
+                disabled={!project?.video || scanProgress.isRunning || quickExportStatus === 'scanning' || quickExportStatus === 'exporting'}
+                title="Scan video, accept all findings, and export in one step"
+                style={{ flex: 1, fontSize: 'var(--font-size-small)' }}
+              >
+                {quickExportStatus === 'scanning' ? 'Scanning…'
+                  : quickExportStatus === 'accepting' ? 'Accepting…'
+                  : quickExportStatus === 'exporting' ? 'Exporting…'
+                  : 'Quick Export'}
+              </button>
+            </div>
+            {quickExportError && (
+              <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--reject)', marginTop: 'var(--space-1)' }}>{quickExportError}</div>
+            )}
+            {quickExportStatus !== 'idle' && quickExportStatus !== 'error' && quickExportStatus !== 'done' && (
+              <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
+                {quickExportStatus === 'scanning' ? 'Step 1/3: Scanning for PII…'
+                  : quickExportStatus === 'accepting' ? 'Step 2/3: Accepting all findings…'
+                  : 'Step 3/3: Encoding video…'}
+              </div>
+            )}
           </>
         )}
       </div>
 
+      {/* Global censor bar style — applies to all events */}
+      {events.length > 0 && (
+        <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+            <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Censor Bar Style</span>
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>— all {events.length} bar{events.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {/* Style type buttons */}
+          <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+            {(['blur', 'pixelate', 'solid_box'] as RedactionStyleType[]).map((t) => {
+              const active = globalType === t
+              return (
+                <button
+                  key={t}
+                  onClick={() => handleGlobalType(t)}
+                  style={{
+                    flex: 1,
+                    padding: 'var(--space-2) var(--space-1)',
+                    fontSize: 'var(--font-size-xs)',
+                    fontWeight: active ? 600 : 400,
+                    background: active ? 'var(--accent)' : 'var(--glass-bg)',
+                    color: active ? '#fff' : 'var(--text)',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    transition: 'all var(--transition-fast)',
+                    minHeight: 'auto',
+                  }}
+                  title={
+                    t === 'blur' ? 'Gaussian blur — obscures text while looking natural'
+                    : t === 'pixelate' ? 'Pixelate — mosaic effect'
+                    : 'Solid box — opaque filled rectangle'
+                  }
+                >
+                  {STYLE_LABELS[t]}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Strength slider (hidden for solid_box) */}
+          {globalType !== 'solid_box' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
+              <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>
+                {STRENGTH_LABELS[globalType]}
+              </label>
+              <input
+                type="range"
+                min={3}
+                max={51}
+                step={2}
+                value={globalStrength}
+                onChange={(e) => handleGlobalStrength(parseInt(e.target.value, 10))}
+                style={{ flex: 1, accentColor: 'var(--accent)' }}
+              />
+              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
+                {globalStrength}
+              </span>
+            </div>
+          )}
+
+          {/* Color picker (solid_box only) */}
+          {globalType === 'solid_box' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
+              <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
+              <input
+                type="color"
+                value={globalColor}
+                onChange={(e) => handleGlobalColor(e.target.value)}
+                style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: 'none' }}
+                title="Box fill color for all bars"
+              />
+              <code style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>{globalColor}</code>
+            </div>
+          )}
+
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)', fontStyle: 'italic' }}>
+            Select a finding below to override its style individually
+          </div>
+        </div>
+      )}
+
       {/* Selected event detail */}
       {event ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
-          <div style={{ fontWeight: 700, marginBottom: 12 }}>Finding Detail</div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4)' }}>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-section)', marginBottom: 'var(--space-4)' }}>Finding Detail</div>
 
           <Field label="Type">
             <span className={`tag ${event.pii_type}`}>{event.pii_type}</span>
           </Field>
 
           <Field label="Confidence">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 3 }}>
-                <div style={{ width: `${event.confidence * 100}%`, height: '100%', background: 'var(--accent)', borderRadius: 3 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <div style={{ flex: 1, height: 6, background: 'var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                <div style={{ width: `${event.confidence * 100}%`, height: '100%', background: 'var(--accent)', borderRadius: 'var(--radius-sm)', transition: 'width var(--transition-fast)' }} />
               </div>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 32 }}>
+              <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 32 }}>
                 {Math.round(event.confidence * 100)}%
               </span>
             </div>
           </Field>
 
           <Field label="Detected text">
-            <code style={{ fontSize: 12, background: 'var(--bg)', padding: '4px 8px', borderRadius: 4, display: 'block', wordBreak: 'break-all' }}>
+            <code style={{ fontSize: 'var(--font-size-small)', background: 'var(--bg)', padding: 'var(--space-1) var(--space-2)', borderRadius: 'var(--radius-sm)', display: 'block', wordBreak: 'break-all' }}>
               {event.extracted_text ?? '[secure mode — not stored]'}
             </code>
           </Field>
 
           <Field label="Time ranges">
             {event.time_ranges.map((r, i) => (
-              <div key={i} style={{ fontSize: 12, fontFamily: 'monospace', marginBottom: 2 }}>
+              <div key={i} style={{ fontSize: 'var(--font-size-small)', fontFamily: 'monospace', marginBottom: 'var(--space-1)' }}>
                 {formatMs(r.start_ms)} – {formatMs(r.end_ms)}
               </div>
             ))}
           </Field>
 
           <Field label="Source / Tracking">
-            <span style={{ fontSize: 12 }}>{event.source} · {event.tracking_method}</span>
+            <span style={{ fontSize: 'var(--font-size-small)' }}>{event.source} · {event.tracking_method}</span>
           </Field>
 
-          <Field label="Redaction style">
+          <Field label="Style (this finding)">
             {/* Style type selector */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
               {(['blur', 'pixelate', 'solid_box'] as RedactionStyleType[]).map((t) => {
                 const active = event.redaction_style.type === t
                 return (
@@ -212,14 +440,16 @@ export function Inspector({ style }: Props) {
                     onClick={() => handleStyleType(t)}
                     style={{
                       flex: 1,
-                      padding: '5px 4px',
-                      fontSize: 11,
-                      fontWeight: active ? 700 : 400,
-                      background: active ? 'var(--accent)' : 'var(--bg)',
+                      padding: 'var(--space-2) var(--space-1)',
+                      fontSize: 'var(--font-size-xs)',
+                      fontWeight: active ? 600 : 400,
+                      background: active ? 'var(--accent)' : 'var(--glass-bg)',
                       color: active ? '#fff' : 'var(--text)',
                       border: `1px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                      borderRadius: 4,
+                      borderRadius: 'var(--radius-sm)',
                       cursor: 'pointer',
+                      transition: 'all var(--transition-fast)',
+                      minHeight: 'auto',
                     }}
                     title={
                       t === 'blur' ? 'Gaussian blur — obscures text while looking natural'
@@ -235,8 +465,8 @@ export function Inspector({ style }: Props) {
 
             {/* Strength slider (hidden for solid_box) */}
             {event.redaction_style.type !== 'solid_box' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 64 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+                <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>
                   {STRENGTH_LABELS[event.redaction_style.type]}
                 </label>
                 <input
@@ -248,7 +478,7 @@ export function Inspector({ style }: Props) {
                   onChange={(e) => handleStrength(parseInt(e.target.value, 10))}
                   style={{ flex: 1, accentColor: 'var(--accent)' }}
                 />
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 20, textAlign: 'right' }}>
                   {event.redaction_style.strength}
                 </span>
               </div>
@@ -256,23 +486,23 @@ export function Inspector({ style }: Props) {
 
             {/* Color picker (solid_box only) */}
             {event.redaction_style.type === 'solid_box' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <label style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <label style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', minWidth: 64 }}>Color</label>
                 <input
                   type="color"
                   value={event.redaction_style.color}
                   onChange={(e) => handleColor(e.target.value)}
-                  style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: 'none' }}
+                  style={{ width: 36, height: 28, padding: 2, border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: 'none' }}
                   title="Box fill color"
                 />
-                <code style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                <code style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
                   {event.redaction_style.color}
                 </code>
               </div>
             )}
 
             {/* Style description */}
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, fontStyle: 'italic' }}>
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-2)', fontStyle: 'italic' }}>
               {event.redaction_style.type === 'blur'
                 ? 'Gaussian blur applied to the region. Higher radius = stronger obscuring.'
                 : event.redaction_style.type === 'pixelate'
@@ -282,7 +512,7 @@ export function Inspector({ style }: Props) {
           </Field>
 
           <Field label="Status">
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <button
                 className="accept"
                 style={{ flex: 1, opacity: event.status === 'accepted' ? 1 : 0.55 }}
@@ -301,14 +531,16 @@ export function Inspector({ style }: Props) {
           </Field>
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 24, textAlign: 'center', fontSize: 13 }}>
-          Select a finding from the left panel to view details
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 'var(--space-6)', textAlign: 'center', gap: 'var(--space-2)' }}>
+          <div style={{ fontSize: 'var(--font-size-section)', opacity: 0.3 }}>◎</div>
+          <div style={{ fontSize: 'var(--font-size-body)' }}>No finding selected</div>
+          <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Click a finding from the left panel to view details</div>
         </div>
       )}
 
       {/* Keyboard shortcuts */}
-      <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-muted)' }}>
-        <div style={{ fontWeight: 600, marginBottom: 5 }}>Shortcuts</div>
+      <div style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--border-hairline)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+        <div style={{ fontWeight: 500, marginBottom: 'var(--space-1)' }}>Shortcuts</div>
         {[
           ['Space', 'Play / Pause'],
           ['J / L', 'Step ±5 s'],
@@ -316,8 +548,8 @@ export function Inspector({ style }: Props) {
           ['A', 'Accept selected'],
           ['R', 'Reject selected'],
         ].map(([key, desc]) => (
-          <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-            <code style={{ background: 'var(--bg)', padding: '1px 5px', borderRadius: 3 }}>{key}</code>
+          <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 'var(--space-1)' }}>
+            <code style={{ background: 'var(--surface-secondary)', padding: '1px 6px', borderRadius: 'var(--radius-sm)', fontSize: 'var(--font-size-xs)' }}>{key}</code>
             <span>{desc}</span>
           </div>
         ))}
@@ -328,8 +560,8 @@ export function Inspector({ style }: Props) {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 14 }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+    <div style={{ marginBottom: 'var(--space-4)' }}>
+      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-1)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 500 }}>
         {label}
       </div>
       {children}

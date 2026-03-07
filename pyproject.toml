@@ -11,7 +11,7 @@ dependencies = [
 
     # Video processing
     "ffmpeg-python>=0.2.0",
-    "opencv-python>=4.10.0",
+    "opencv-contrib-python>=4.10.0",
 
     # OCR — EasyOCR (PyTorch-based; GPU auto-detected via CUDA)
     "easyocr>=1.7.0",
@@ -27,7 +27,7 @@ dependencies = [
     "chardet>=3.0.2,<4",
 
     # Scene detection
-    "scenedetect[opencv]>=0.6.0",
+    "scenedetect>=0.6.0",
 
     # Data validation
     "pydantic>=2.7.0",
@@ -45,9 +45,29 @@ dev = [
     "ruff>=0.4.0",
 ]
 
+# Override easyocr's opencv-python-headless dep → use opencv-contrib-python instead.
+# All three opencv-* packages install into the same cv2 namespace and conflict;
+# only opencv-contrib-python ships the CSRT tracker we need for tracking.
+[tool.uv]
+# Ensure `uv sync` pulls CUDA-enabled PyTorch, not the CPU-only default from PyPI.
+index-url = "https://pypi.org/simple"
+extra-index-url = ["https://download.pytorch.org/whl/cu130"]
+
+override-dependencies = [
+    # Block opencv-python-headless/opencv-python from being installed transitively
+    # (easyocr depends on opencv-python-headless). All three opencv-* packages
+    # install into the same cv2 namespace; only opencv-contrib-python ships the
+    # CSRT tracker we need.
+    "opencv-python-headless>=4.10.0 ; python_version < '0'",  # never install
+    "opencv-python>=4.10.0 ; python_version < '0'",           # never install
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
 
 [tool.ruff]
 line-length = 100

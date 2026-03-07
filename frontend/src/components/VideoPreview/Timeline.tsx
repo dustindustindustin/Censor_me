@@ -27,6 +27,10 @@ interface Props {
   currentTimeMs: number
   /** Callback to seek the video to a given time when the user clicks the timeline. */
   onSeek: (ms: number) => void
+  /** Range scan in-point in milliseconds, or null when not set. */
+  inPoint?: number | null
+  /** Range scan out-point in milliseconds, or null when not set. */
+  outPoint?: number | null
 }
 
 /** Color map for event status — used for the timeline markers. */
@@ -41,7 +45,7 @@ const STATUS_COLORS = {
  *
  * @param props - See ``Props``.
  */
-export function Timeline({ durationMs, currentTimeMs, onSeek }: Props) {
+export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint }: Props) {
   const { events, selectEvent } = useProjectStore((s) => ({
     events: s.events,
     selectEvent: s.selectEvent,
@@ -66,7 +70,7 @@ export function Timeline({ durationMs, currentTimeMs, onSeek }: Props) {
   const playheadPct = durationMs > 0 ? (currentTimeMs / durationMs) * 100 : 0
 
   return (
-    <div style={{ padding: '8px 12px', background: 'var(--surface)', borderTop: '1px solid var(--border)' }}>
+    <div style={{ padding: 'var(--space-2) var(--space-3)', background: 'var(--surface)', borderTop: '1px solid var(--border-hairline)' }}>
       {/* ── Clickable scrubber bar ── */}
       <div
         ref={barRef}
@@ -74,12 +78,67 @@ export function Timeline({ durationMs, currentTimeMs, onSeek }: Props) {
         style={{
           position: 'relative',
           height: 32,
-          background: 'var(--bg)',
-          borderRadius: 4,
+          background: 'rgba(255, 255, 255, 0.08)',
+          borderRadius: 'var(--radius-sm)',
           cursor: 'pointer',
           overflow: 'hidden',
         }}
       >
+        {/* ── Range scan shaded region (in → out) ── */}
+        {inPoint != null && outPoint != null && (() => {
+          const startPct = (Math.min(inPoint, outPoint) / durationMs) * 100
+          const endPct = (Math.max(inPoint, outPoint) / durationMs) * 100
+          return (
+            <div
+              style={{
+                position: 'absolute',
+                left: `${startPct}%`,
+                width: `${endPct - startPct}%`,
+                top: 0, bottom: 0,
+                background: 'var(--accent-tint)',
+                pointerEvents: 'none',
+                zIndex: 2,
+              }}
+            />
+          )
+        })()}
+
+        {/* ── In-point marker ── */}
+        {inPoint != null && (
+          <div
+            title={`In: ${formatMs(inPoint)}`}
+            style={{
+              position: 'absolute',
+              left: `${(inPoint / durationMs) * 100}%`,
+              top: 0, bottom: 0,
+              width: 2,
+              background: 'var(--accent)',
+              pointerEvents: 'none',
+              zIndex: 8,
+            }}
+          >
+            <div style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, color: 'var(--accent)', whiteSpace: 'nowrap', userSelect: 'none' }}>I</div>
+          </div>
+        )}
+
+        {/* ── Out-point marker ── */}
+        {outPoint != null && (
+          <div
+            title={`Out: ${formatMs(outPoint)}`}
+            style={{
+              position: 'absolute',
+              left: `${(outPoint / durationMs) * 100}%`,
+              top: 0, bottom: 0,
+              width: 2,
+              background: 'var(--accent)',
+              pointerEvents: 'none',
+              zIndex: 8,
+            }}
+          >
+            <div style={{ position: 'absolute', top: 2, left: 2, fontSize: 9, color: 'var(--accent)', whiteSpace: 'nowrap', userSelect: 'none' }}>O</div>
+          </div>
+        )}
+
         {/* ── Playhead: white vertical line at current time ── */}
         <div
           style={{
@@ -88,7 +147,7 @@ export function Timeline({ durationMs, currentTimeMs, onSeek }: Props) {
             top: 0,
             bottom: 0,
             width: 2,
-            background: '#fff',
+            background: 'var(--text)',
             pointerEvents: 'none',  // Don't intercept clicks on the bar
             zIndex: 10,
           }}
@@ -135,8 +194,8 @@ export function Timeline({ durationMs, currentTimeMs, onSeek }: Props) {
       <div style={{
         display: 'flex',
         justifyContent: 'space-between',
-        marginTop: 4,
-        fontSize: 11,
+        marginTop: 'var(--space-1)',
+        fontSize: 'var(--font-size-xs)',
         color: 'var(--text-muted)',
         fontFamily: 'monospace',
       }}>

@@ -181,6 +181,107 @@ async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> 
     raise HTTPException(status_code=404, detail="Event not found")
 
 
+@router.patch("/{project_id}/settings")
+async def update_settings(project_id: str, body: dict) -> ProjectFile:
+    """
+    Update scan and/or output settings for a project.
+
+    Body may contain ``scan_settings`` and/or ``output_settings`` keys, each
+    being a partial object that is merged into the existing settings.
+    """
+    from backend.models.project import ScanSettings, OutputSettings
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = ProjectFile.load(project_dir)
+    if "scan_settings" in body:
+        merged = project.scan_settings.model_dump() | body["scan_settings"]
+        project.scan_settings = ScanSettings.model_validate(merged)
+    if "output_settings" in body:
+        merged = project.output_settings.model_dump() | body["output_settings"]
+        project.output_settings = OutputSettings.model_validate(merged)
+    project.save(project_dir)
+    return project
+
+
+@router.patch("/{project_id}/events/bulk-status")
+async def bulk_update_event_status(project_id: str, body: dict):
+    """
+    Accept, reject, or reset all (or a subset of) events in a single request.
+
+    Body: { "status": "accepted"|"rejected"|"pending", "event_ids": ["id1", ...] | null }
+
+    If event_ids is null, the status is applied to ALL events in the project.
+    Loads the project once, updates all matching events in memory, and saves once.
+
+    Returns:
+        {"updated": N} where N is the number of events whose status was changed.
+    """
+    from backend.models.events import EventStatus
+
+    status = body.get("status")
+    event_ids: list[str] | None = body.get("event_ids")
+
+    valid_statuses = {s.value for s in EventStatus}
+    if status not in valid_statuses:
+        raise HTTPException(status_code=422, detail=f"Status must be one of {valid_statuses}")
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = ProjectFile.load(project_dir)
+    event_id_set = set(event_ids) if event_ids is not None else None
+    updated = 0
+    for event in project.events:
+        if event_id_set is None or event.event_id in event_id_set:
+            event.status = status
+            updated += 1
+
+    project.save(project_dir)
+    return {"updated": updated}
+
+
+@router.patch("/{project_id}/events/bulk-style")
+async def bulk_update_event_style(project_id: str, body: dict):
+    """
+    Apply a redaction style to all (or a subset of) events in a single request.
+
+    Body: { "style": { "type": "blur"|"pixelate"|"solid_box", "strength": int, "color": "#rrggbb" },
+            "event_ids": ["id1", ...] | null }
+
+    If event_ids is null, applies to ALL events in the project.
+    Loads the project once, updates all matching events, and saves once.
+
+    Returns:
+        {"updated": N} where N is the number of events whose style was changed.
+    """
+    from backend.models.events import RedactionStyle
+
+    style_data = body.get("style")
+    if not style_data:
+        raise HTTPException(status_code=422, detail="Missing 'style' in request body")
+
+    event_ids: list[str] | None = body.get("event_ids")
+    style = RedactionStyle.model_validate(style_data)
+
+    project_dir = _project_dir(project_id)
+    if not project_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = ProjectFile.load(project_dir)
+    event_id_set = set(event_ids) if event_ids is not None else None
+    updated = 0
+    for event in project.events:
+        if event_id_set is None or event.event_id in event_id_set:
+            event.redaction_style = style
+            updated += 1
+
+    project.save(project_dir)
+    return {"updated": updated}
+
+
 @router.patch("/{project_id}/events/{event_id}/status")
 async def update_event_status(project_id: str, event_id: str, status: str):
     """

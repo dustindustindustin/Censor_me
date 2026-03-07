@@ -1,0 +1,126 @@
+/* -- Glass panel -- */
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-glass);
+}
+
+/* -- Button variants -- */
+button.secondary {
+  background: var(--glass-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  transition: all var(--transition-fast);
+}
+
+button.secondary:hover {
+  background: var(--glass-bg-hover);
+}
+
+button.ghost {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+button.ghost:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* -- Focus ring (accessibility) -- */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent-focus);
+  outline-offset: 2px;
+}
+
+/* -- Modal -- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  animation: modal-enter var(--transition-normal) ease-out;
+}
+
+/* -- Active sidebar item -- */
+.sidebar-item-active {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-tint);
+  color: var(--text);
+}
+
+/* -- Primary button hover (needs pseudo-class, can't do inline) -- */
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.02);
+  box-shadow: 0 8px 20px var(--accent-shadow);
+}
+
+button.primary:active:not(:disabled) {
+  background: var(--accent-pressed);
+  transform: scale(0.98);
+}
+
+/* -- Accept button states -- */
+button.accept:hover:not(:disabled) {
+  background: var(--accept-hover);
+  transform: scale(1.02);
+}
+
+button.accept:active:not(:disabled) {
+  background: var(--accept-pressed);
+  transform: scale(0.98);
+}
+
+/* -- Reject button states -- */
+button.reject:hover:not(:disabled) {
+  background: var(--reject-hover);
+  transform: scale(1.02);
+}
+
+button.reject:active:not(:disabled) {
+  background: var(--reject-pressed);
+  transform: scale(0.98);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* -- Scrollbar styling -- */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}

@@ -23,7 +23,7 @@
  */
 
 import { create } from 'zustand'
-import type { Project, RedactionEvent, ScanProgressEvent, TestFrameOverlayBox } from '../types'
+import type { OutputSettings, Project, RedactionEvent, RedactionStyle, ScanPreviewBox, ScanProgressEvent, ScanSettings, TestFrameOverlayBox } from '../types'
 
 /** Snapshot of scan pipeline progress, updated by the useScanProgress hook. */
 interface ScanProgress {
@@ -60,10 +60,24 @@ interface ProjectStore {
    * The API call to persist the change is made separately by the caller.
    */
   updateEventStatus: (eventId: string, status: 'accepted' | 'rejected' | 'pending') => void
+  /**
+   * Update multiple events' status optimistically in a single state update.
+   * If eventIds is undefined, applies to all events.
+   */
+  bulkUpdateEventStatus: (status: 'accepted' | 'rejected' | 'pending', eventIds?: string[]) => void
+  /**
+   * Apply a redaction style to multiple events optimistically.
+   * If eventIds is undefined, applies to all events.
+   */
+  bulkUpdateEventStyle: (style: RedactionStyle, eventIds?: string[]) => void
   /** Append a new event (used when a manual region is drawn). */
   addEvent: (event: RedactionEvent) => void
+  /** Append multiple new events in a single state update (e.g., after a single-frame scan). */
+  addEvents: (events: RedactionEvent[]) => void
   /** Replace a single event in the list (e.g., after tracking updates its keyframes). */
   updateEvent: (event: RedactionEvent) => void
+  /** Update scan and output settings in the open project (optimistic, after API save). */
+  updateProjectSettings: (scan: ScanSettings, output: OutputSettings) => void
 
   // ── Playhead ────────────────────────────────────────────────────────────────
 
@@ -94,6 +108,15 @@ interface ProjectStore {
   testFrameOverlay: TestFrameOverlayBox[] | null
   setTestFrameOverlay: (boxes: TestFrameOverlayBox[] | null) => void
 
+  // ── Scan preview ─────────────────────────────────────────────────────────────
+
+  /**
+   * The most recently scanned frame's timestamp and detected PII boxes.
+   * Updated on every OCR progress event during a scan; null when idle.
+   * Used by VideoPreview to seek the video and by OverlayCanvas to draw live boxes.
+   */
+  scanPreviewFrame: { time_ms: number; boxes: ScanPreviewBox[] } | null
+
   // ── Zoom ────────────────────────────────────────────────────────────────────
 
   /** Video zoom level (CSS scale). Range [1.0, 4.0]. */
@@ -105,6 +128,18 @@ interface ProjectStore {
   /** When true, the overlay canvas accepts mouse events for drawing new boxes. */
   drawingMode: boolean
   setDrawingMode: (on: boolean) => void
+  /** When true, drawn boxes are pinned at a fixed position for the full video (no tracking). */
+  staticDrawMode: boolean
+  setStaticDrawMode: (on: boolean) => void
+
+  // ── Live preview ─────────────────────────────────────────────────────────────
+
+  /**
+   * When true, pausing the video renders actual blur/pixelate/solid_box effects
+   * on the canvas instead of the colored placeholder boxes.
+   */
+  livePreviewMode: boolean
+  toggleLivePreviewMode: () => void
 
   // ── Active scan ─────────────────────────────────────────────────────────────
 
@@ -148,8 +183,10 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     selectedEventId: null,
     // Reset all per-session UI state so it doesn't bleed into the next project
     testFrameOverlay: null,
+    scanPreviewFrame: null,
     zoomLevel: 1,
     drawingMode: false,
+    staticDrawMode: false,
     scanId: null,
     scanProgress: DEFAULT_SCAN_PROGRESS,
   }),
@@ -166,13 +203,42 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       ),
     })),
 
+  bulkUpdateEventStatus: (status, eventIds) =>
+    set((state) => {
+      const idSet = eventIds ? new Set(eventIds) : null
+      return {
+        events: state.events.map((e) =>
+          idSet === null || idSet.has(e.event_id) ? { ...e, status } : e
+        ),
+      }
+    }),
+
+  bulkUpdateEventStyle: (style, eventIds) =>
+    set((state) => {
+      const idSet = eventIds ? new Set(eventIds) : null
+      return {
+        events: state.events.map((e) =>
+          idSet === null || idSet.has(e.event_id) ? { ...e, redaction_style: style } : e
+        ),
+      }
+    }),
+
   addEvent: (event) =>
     set((state) => ({ events: [...state.events, event] })),
+
+  addEvents: (events) =>
+    set((state) => ({ events: [...state.events, ...events] })),
 
   updateEvent: (event) =>
     set((state) => ({
       events: state.events.map((e) => e.event_id === event.event_id ? event : e),
     })),
+
+  updateProjectSettings: (scan, output) =>
+    set((state) => {
+      if (!state.project) return {}
+      return { project: { ...state.project, scan_settings: scan, output_settings: output } }
+    }),
 
   // ── Playhead ────────────────────────────────────────────────────────────────
 
@@ -196,6 +262,10 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   testFrameOverlay: null,
   setTestFrameOverlay: (boxes) => set({ testFrameOverlay: boxes }),
 
+  // ── Scan preview ─────────────────────────────────────────────────────────────
+
+  scanPreviewFrame: null,
+
   // ── Zoom ────────────────────────────────────────────────────────────────────
 
   zoomLevel: 1,
@@ -205,6 +275,13 @@ export const useProjectStore = create<ProjectStore>((set) => ({
 
   drawingMode: false,
   setDrawingMode: (on) => set({ drawingMode: on }),
+  staticDrawMode: false,
+  setStaticDrawMode: (on) => set({ staticDrawMode: on }),
+
+  // ── Live preview ─────────────────────────────────────────────────────────────
+
+  livePreviewMode: true,
+  toggleLivePreviewMode: () => set((s) => ({ livePreviewMode: !s.livePreviewMode })),
 
   // ── Active scan ─────────────────────────────────────────────────────────────
 
@@ -227,15 +304,30 @@ export const useProjectStore = create<ProjectStore>((set) => ({
         return { scanProgress: { ...prev, isRunning: true, progressPct: 0, findingsCount: 0, totalOcrFrames: event.total_ocr_frames, stage: 'starting' } }
       }
       if (event.stage === 'ocr') {
-        return { scanProgress: { ...prev, stage: 'ocr', progressPct: event.progress_pct, findingsCount: event.findings_so_far } }
+        return {
+          scanProgress: { ...prev, stage: 'ocr', progressPct: event.progress_pct, findingsCount: event.findings_so_far },
+          scanPreviewFrame: { time_ms: event.time_ms, boxes: event.scan_boxes },
+        }
+      }
+      if (event.stage === 'linking' && 'progress_pct' in event && event.progress_pct !== undefined) {
+        return { scanProgress: { ...prev, stage: 'linking', progressPct: event.progress_pct } }
+      }
+      if (event.stage === 'refining' && 'progress_pct' in event && event.progress_pct !== undefined) {
+        return { scanProgress: { ...prev, stage: 'refining', progressPct: event.progress_pct } }
+      }
+      if (event.stage === 'track') {
+        return {
+          scanProgress: { ...prev, stage: 'track', progressPct: event.progress_pct },
+          scanPreviewFrame: { time_ms: event.time_ms, boxes: [] },
+        }
       }
       if (event.stage === 'done') {
-        return { scanId: null, scanProgress: { ...prev, isRunning: false, stage: 'done', progressPct: 100, findingsCount: event.total_findings } }
+        return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'done', progressPct: 100, findingsCount: event.total_findings } }
       }
       if (event.stage === 'error') {
-        return { scanId: null, scanProgress: { ...prev, isRunning: false, stage: 'error' } }
+        return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'error' } }
       }
-      // All other stages (linking, link_done, tracking, track, scene_change):
+      // All other stages (linking, link_done, tracking, scene_change):
       // just update the stage label without changing other fields
       return { scanProgress: { ...prev, stage: event.stage } }
     }),

@@ -8,9 +8,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { createProject, getProject, getSystemStatus, listProjects } from './api/client'
+import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
 import { Inspector } from './components/Inspector/Inspector'
+import { SettingsModal } from './components/Settings/SettingsModal'
 import { VideoPreview } from './components/VideoPreview/VideoPreview'
 import { useProjectStore } from './store/projectStore'
 import type { Project, SystemStatus } from './types'
@@ -19,11 +20,24 @@ export default function App() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [initMessage, setInitMessage] = useState('Connecting to backend…')
   const [initError, setInitError] = useState<string | null>(null)
-  const { project, setProject, clearProject } = useProjectStore((s) => ({
+  const [showSettings, setShowSettings] = useState(false)
+  const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
     clearProject: s.clearProject,
+    setScanId: s.setScanId,
   }))
+
+  // Wrapper around setProject that also reconnects to any in-progress scan.
+  // Called when the user opens a project from the selector — handles the case
+  // where they navigated away mid-scan and need to reattach to the WebSocket.
+  const handleOpenProject = async (p: Project) => {
+    setProject(p)
+    const active = await getActiveScan(p.project_id)
+    if (active) {
+      setScanId(active.scan_id)
+    }
+  }
   const videoRef = useRef<HTMLVideoElement>(null)
 
   // Poll backend until ready (models downloaded and initialized)
@@ -66,12 +80,12 @@ export default function App() {
 
   if (!systemStatus) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12 }}>
-        <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--accent)' }}>Censor Me</div>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 'var(--space-4)' }}>
+        <div style={{ fontSize: 'var(--font-size-title)', fontWeight: 600, color: 'var(--accent)' }}>Censor Me</div>
         {initError ? (
-          <div style={{ color: 'var(--reject)', fontSize: 13, maxWidth: 400, textAlign: 'center' }}>{initError}</div>
+          <div style={{ color: 'var(--reject)', fontSize: 'var(--font-size-body)', maxWidth: 400, textAlign: 'center' }}>{initError}</div>
         ) : (
-          <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>{initMessage}</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>{initMessage}</div>
         )}
       </div>
     )
@@ -81,7 +95,7 @@ export default function App() {
     return (
       <ProjectSelector
         gpuDisplay={systemStatus.gpu.display_name}
-        onOpen={setProject}
+        onOpen={handleOpenProject}
       />
     )
   }
@@ -90,24 +104,39 @@ export default function App() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Status bar */}
       <div style={{
-        padding: '5px 14px',
+        padding: 'var(--space-2) var(--space-4)',
         background: 'var(--surface)',
-        borderBottom: '1px solid var(--border)',
+        borderBottom: '1px solid var(--border-hairline)',
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        fontSize: 13,
+        gap: 'var(--space-3)',
+        fontSize: 'var(--font-size-body)',
       }}>
-        <span style={{ fontWeight: 700, color: 'var(--accent)', cursor: 'pointer' }} onClick={clearProject} title="Back to project list">
+        <span style={{ fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }} onClick={clearProject} title="Back to project list">
           Censor Me
         </span>
-        <span style={{ color: 'var(--border)' }}>›</span>
+        <span style={{ color: 'var(--text-disabled)' }}>›</span>
         <span>{project.name}</span>
-        {systemStatus.gpu.cuda_available && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-            ⚡ {systemStatus.gpu.gpu_name}
+        {project.video && (
+          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+            {project.video.width}×{project.video.height} · {project.video.fps.toFixed(0)} fps · {project.video.codec}
           </span>
         )}
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          {systemStatus.gpu.cuda_available && (
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+              ⚡ {systemStatus.gpu.gpu_name}
+            </span>
+          )}
+          <button
+            className="ghost"
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+            style={{ fontSize: 16, lineHeight: 1, padding: 'var(--space-1)', minHeight: 'auto' }}
+          >
+            ⚙
+          </button>
+        </div>
       </div>
 
       {/* Three-pane layout */}
@@ -116,6 +145,16 @@ export default function App() {
         <VideoPreview videoRef={videoRef} style={{ flex: 1, minWidth: 0 }} />
         <Inspector style={{ width: 300, flexShrink: 0 }} />
       </div>
+
+      {showSettings && (
+        <SettingsModal
+          projectId={project.project_id}
+          initialScanSettings={project.scan_settings}
+          initialOutputSettings={project.output_settings}
+          gpuAvailable={systemStatus.gpu.cuda_available}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   )
 }
@@ -162,27 +201,27 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 24 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 'var(--space-6)' }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 36, fontWeight: 800, color: 'var(--accent)', letterSpacing: '-0.5px' }}>Censor Me</div>
-        <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>Local GPU-accelerated video PII redaction</div>
-        <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 4 }}>⚡ {gpuDisplay}</div>
+        <div style={{ fontSize: 'var(--font-size-title)', fontWeight: 600, color: 'var(--accent)' }}>Censor Me</div>
+        <div style={{ color: 'var(--text-muted)', marginTop: 'var(--space-2)' }}>Local GPU-accelerated video PII redaction</div>
+        <div style={{ color: 'var(--text-disabled)', fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-1)' }}>⚡ {gpuDisplay}</div>
       </div>
 
-      {error && <div style={{ color: 'var(--reject)', fontSize: 13 }}>{error}</div>}
+      {error && <div style={{ color: 'var(--reject)', fontSize: 'var(--font-size-body)' }}>{error}</div>}
 
       <button
         className="primary"
         onClick={handleNew}
         disabled={loading}
-        style={{ padding: '10px 28px', fontSize: 15 }}
+        style={{ padding: 'var(--space-3) var(--space-8)', fontSize: 'var(--font-size-body)' }}
       >
         {loading ? 'Creating…' : '+ New Project'}
       </button>
 
       {projects.length > 0 && (
         <div style={{ width: 420 }}>
-          <div style={{ color: 'var(--text-muted)', marginBottom: 8, fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          <div style={{ color: 'var(--text-muted)', marginBottom: 'var(--space-2)', fontSize: 'var(--font-size-small)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
             Recent Projects
           </div>
           {projects.map((p) => (
@@ -190,28 +229,29 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
               key={p.project_id}
               onClick={() => handleOpen(p.project_id)}
               style={{
-                padding: '11px 14px',
+                padding: 'var(--space-3) var(--space-4)',
                 background: 'var(--surface)',
-                borderRadius: 6,
-                marginBottom: 6,
+                borderRadius: 'var(--radius-md)',
+                marginBottom: 'var(--space-2)',
                 cursor: 'pointer',
                 border: '1px solid var(--border)',
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
+                transition: 'all var(--transition-fast)',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
-              onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--border)')}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'; e.currentTarget.style.background = 'var(--surface-secondary)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'var(--surface)' }}
             >
               <div>
-                <div style={{ fontWeight: 600 }}>{p.name}</div>
+                <div style={{ fontWeight: 500 }}>{p.name}</div>
                 {p.video && (
-                  <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 2 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)', marginTop: 2 }}>
                     {p.video.width}×{p.video.height} · {(p.video.duration_ms / 60000).toFixed(1)} min
                   </div>
                 )}
               </div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}>
                 {new Date(p.updated_at).toLocaleDateString()}
               </div>
             </div>

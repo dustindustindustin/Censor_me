@@ -133,6 +133,8 @@ export interface Project {
   updated_at: string   // ISO 8601 UTC timestamp
   video: VideoMetadata | null  // null until a video has been imported
   proxy_path: string | null    // null until proxy generation completes
+  scan_settings: ScanSettings
+  output_settings: OutputSettings
   events: RedactionEvent[]
 }
 
@@ -163,6 +165,43 @@ export interface TestFrameOverlayBox {
   bbox: [number, number, number, number]  // [x, y, w, h] in source video pixels
   pii_type: PiiType
   text: string
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export type RuleType = 'regex' | 'context' | 'allowlist' | 'denylist' | 'field_label'
+
+export interface Rule {
+  rule_id: string
+  name: string
+  type: RuleType
+  enabled: boolean
+  pattern: string | null
+  label: string | null
+  priority: number
+  confidence: number
+  context_pixels: number | null
+  description: string
+}
+
+export interface ScanSettings {
+  preset: string
+  ocr_sample_interval: number
+  ocr_resolution_scale: number
+  confidence_threshold: number
+  secure_mode: boolean
+}
+
+export interface OutputSettings {
+  codec: string
+  resolution: string
+  custom_width: number | null
+  custom_height: number | null
+  quality_mode: string
+  crf: number
+  bitrate_kbps: number | null
+  use_nvenc: boolean
+  watermark: boolean
 }
 
 // ── Frame test diagnostic ─────────────────────────────────────────────────────
@@ -225,13 +264,21 @@ export interface FrameTestResult {
  *
  * Error at any stage emits: error
  */
+/** A single PII detection box included in a live scan preview event. */
+export interface ScanPreviewBox {
+  bbox: [number, number, number, number]  // [x, y, w, h] in source video pixels
+  pii_type: PiiType
+}
+
 export type ScanProgressEvent =
   | { stage: 'starting'; total_ocr_frames: number }
-  | { stage: 'ocr'; frame: number; time_ms: number; ocr_boxes: number; findings_so_far: number; progress_pct: number }
+  | { stage: 'ocr'; frame: number; time_ms: number; ocr_boxes: number; findings_so_far: number; progress_pct: number; scan_boxes: ScanPreviewBox[] }
   | { stage: 'scene_change'; frame: number; time_ms: number }
-  | { stage: 'linking'; total_candidates: number }
+  | { stage: 'linking'; total_candidates: number; progress_pct?: number }
   | { stage: 'link_done'; events_found: number }
+  | { stage: 'refining'; total_refine_frames?: number; progress_pct?: number }
+  | { stage: 'refine_done'; events_found: number; extra_candidates: number }
   | { stage: 'tracking'; total_events: number }
-  | { stage: 'track'; event_id: string }
+  | { stage: 'track'; frames_done: number; total_frames: number; active_trackers: number; progress_pct: number; time_ms: number }
   | { stage: 'done'; total_findings: number }
   | { stage: 'error'; message: string }

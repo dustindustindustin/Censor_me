@@ -1,0 +1,70 @@
+:root {
+  /* -- Accent -- */
+  --accent: #D81B60;
+  --accent-hover: #E91E63;
+  --accent-pressed: #AD1457;
+  --accent-focus: rgba(216, 27, 96, 0.45);
+  --accent-tint: rgba(216, 27, 96, 0.08);
+  --accent-shadow: rgba(216, 27, 96, 0.35);
+
+  /* -- Backgrounds (Layer 0-2) -- */
+  --bg: #0F0F14;
+  --surface: #15151C;
+  --surface-secondary: #1C1C24;
+  --glass-bg: rgba(255, 255, 255, 0.06);
+  --glass-bg-hover: rgba(255, 255, 255, 0.09);
+
+  /* -- Borders -- */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hairline: rgba(255, 255, 255, 0.05);
+
+  /* -- Text -- */
+  --text: #EAEAF0;
+  --text-muted: #A9A9B6;
+  --text-disabled: #6E6E7A;
+
+  /* -- Semantic -- */
+  --accept: #26C6A0;
+  --accept-hover: #2DD4AC;
+  --accept-pressed: #1EA888;
+  --reject: #EF4565;
+  --reject-hover: #F25575;
+  --reject-pressed: #D63A57;
+  --reject-tint: rgba(239, 69, 101, 0.1);
+  --pending: #FFAB40;
+
+  /* -- Shadows -- */
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-btn-primary: 0 6px 16px rgba(216, 27, 96, 0.35);
+  --shadow-elevated: 0 4px 16px rgba(0, 0, 0, 0.25);
+  --inner-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* -- Typography -- */
+  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-size-title: 28px;
+  --font-size-section: 18px;
+  --font-size-body: 14px;
+  --font-size-small: 12px;
+  --font-size-xs: 11px;
+  --line-height: 1.5;
+
+  /* -- Spacing (8px grid) -- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* -- Radii -- */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+
+  /* -- Transitions -- */
+  --transition-fast: 150ms ease-out;
+  --transition-normal: 200ms ease-out;
+  --transition-slow: 250ms ease-out;
+}

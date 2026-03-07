@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { getProject, importVideo, proxyVideoUrl, startScan } from '../../api/client'
+import { getProject, importVideo, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
 import { useProjectStore } from '../../store/projectStore'
@@ -33,11 +33,17 @@ export function VideoPreview({ videoRef, style }: Props) {
     setCurrentTimeMs,
     showRedactionAreas,
     toggleRedactionAreas,
+    livePreviewMode,
+    toggleLivePreviewMode,
     setTestFrameOverlay,
     zoomLevel,
     setZoomLevel,
     drawingMode,
     setDrawingMode,
+    staticDrawMode,
+    setStaticDrawMode,
+    addEvents,
+    scanPreviewFrame,
   } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
@@ -47,11 +53,17 @@ export function VideoPreview({ videoRef, style }: Props) {
     setCurrentTimeMs: s.setCurrentTimeMs,
     showRedactionAreas: s.showRedactionAreas,
     toggleRedactionAreas: s.toggleRedactionAreas,
+    livePreviewMode: s.livePreviewMode,
+    toggleLivePreviewMode: s.toggleLivePreviewMode,
     setTestFrameOverlay: s.setTestFrameOverlay,
     zoomLevel: s.zoomLevel,
     setZoomLevel: s.setZoomLevel,
     drawingMode: s.drawingMode,
     setDrawingMode: s.setDrawingMode,
+    staticDrawMode: s.staticDrawMode,
+    setStaticDrawMode: s.setStaticDrawMode,
+    addEvents: s.addEvents,
+    scanPreviewFrame: s.scanPreviewFrame,
   }))
 
   const [duration, setDuration] = useState(0)
@@ -64,6 +76,14 @@ export function VideoPreview({ videoRef, style }: Props) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolume] = useState(1)
   const [playbackRate, setPlaybackRate] = useState(1)
+
+  // Single-frame scan state
+  const [scanningFrame, setScanningFrame] = useState(false)
+  const [scanFrameMsg, setScanFrameMsg] = useState<string | null>(null)
+
+  // Range scan state (ephemeral UI — not persisted to project)
+  const [inPoint, setInPoint] = useState<number | null>(null)
+  const [outPoint, setOutPoint] = useState<number | null>(null)
 
   const videoContainerRef = useRef<HTMLDivElement>(null)
 
@@ -94,6 +114,17 @@ export function VideoPreview({ videoRef, style }: Props) {
       getProject(project.project_id).then(setProject).catch(console.error)
     }
   }, [scanProgress.stage])
+
+  // Seek the video to each frame as it's scanned/tracked so the user can see
+  // a live preview of what is being examined. During OCR, only seeks when
+  // paused. During tracking, always seeks (shows which frame is being tracked).
+  useEffect(() => {
+    if (!scanPreviewFrame || !videoRef.current) return
+    const isTracking = scanProgress.stage === 'track' || scanProgress.stage === 'tracking'
+    if (!isTracking && !videoRef.current.paused) return
+    if (isTracking && !videoRef.current.paused) videoRef.current.pause()
+    videoRef.current.currentTime = scanPreviewFrame.time_ms / 1000
+  }, [scanPreviewFrame?.time_ms])
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!project || !e.target.files?.[0]) return
@@ -162,15 +193,52 @@ export function VideoPreview({ videoRef, style }: Props) {
     setTestFrameOverlay(null)
   }
 
+  const handleScanFrame = async () => {
+    if (!project?.video || scanningFrame || scanProgress.isRunning) return
+    const fps = project.video.fps
+    const frameIndex = Math.round((currentTime / 1000) * fps)
+    setScanningFrame(true)
+    setScanFrameMsg(null)
+    try {
+      const result = await scanFrame(project.project_id, frameIndex)
+      addEvents(result.events)
+      setScanFrameMsg(
+        result.count > 0
+          ? `Found ${result.count} finding${result.count !== 1 ? 's' : ''} on this frame`
+          : 'No PII found on this frame'
+      )
+    } catch (err) {
+      setScanFrameMsg('Scan failed — check console')
+      console.error('scanFrame error:', err)
+    } finally {
+      setScanningFrame(false)
+      setTimeout(() => setScanFrameMsg(null), 4000)
+    }
+  }
+
+  const handleRangeScan = async () => {
+    if (!project || scanId !== null || scanProgress.isRunning) return
+    if (inPoint === null || outPoint === null) return
+    const start = Math.min(inPoint, outPoint)
+    const end = Math.max(inPoint, outPoint)
+    try {
+      const { scan_id } = await startRangeScan(project.project_id, start, end)
+      setScanId(scan_id)
+    } catch (err) {
+      console.error('Range scan failed to start:', err)
+    }
+  }
+
   const proxyUrl = project?.video ? proxyVideoUrl(project.project_id) : null
 
   const isScanPending = scanId !== null && !scanProgress.isRunning
   const isScanRunning = scanProgress.isRunning
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', background: '#111', ...style }}>
+    <div style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg)', ...style }}>
       {/* Toolbar */}
-      <div style={{ padding: '8px 12px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ padding: 'var(--space-2) var(--space-3)', background: 'var(--surface)', borderBottom: '1px solid var(--border-hairline)', display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Primary actions */}
         <label style={{ cursor: importing ? 'wait' : 'pointer' }}>
           <input
             type="file"
@@ -180,13 +248,16 @@ export function VideoPreview({ videoRef, style }: Props) {
             disabled={importing}
           />
           <span style={{
-            padding: '5px 10px',
-            background: 'var(--surface)',
+            display: 'inline-flex', alignItems: 'center',
+            padding: 'var(--space-2) var(--space-4)',
+            minHeight: 36,
+            background: 'var(--glass-bg)',
             border: '1px solid var(--border)',
-            borderRadius: 4,
-            fontSize: 13,
+            borderRadius: 'var(--radius-md)',
+            fontSize: 'var(--font-size-body)',
             cursor: importing ? 'wait' : 'pointer',
-            opacity: importing ? 0.6 : 1,
+            opacity: importing ? 0.5 : 1,
+            transition: 'all var(--transition-fast)',
           }}>
             {importing ? 'Importing…' : 'Import Video'}
           </span>
@@ -201,17 +272,33 @@ export function VideoPreview({ videoRef, style }: Props) {
             {isScanPending
               ? 'Starting…'
               : isScanRunning
-              ? `Scanning… ${scanProgress.progressPct}%`
+              ? scanProgress.stage === 'track'
+                ? `Tracking… ${scanProgress.progressPct}%`
+                : scanProgress.stage === 'tracking'
+                ? 'Tracking… 0%'
+                : scanProgress.stage === 'linking'
+                ? `Linking… ${scanProgress.progressPct}%`
+                : scanProgress.stage === 'link_done'
+                ? 'Linking… 100%'
+                : scanProgress.stage === 'refining'
+                ? `Refining… ${scanProgress.progressPct}%`
+                : scanProgress.stage === 'refine_done'
+                ? 'Refinement done'
+                : `Scanning… ${scanProgress.progressPct}%`
               : 'Scan for PII'}
           </button>
         )}
 
+        {/* Separator */}
+        {project?.video && <div style={{ width: 1, height: 20, background: 'var(--border-hairline)', margin: '0 var(--space-1)' }} />}
+
+        {/* Frame tools */}
         {project?.video && (
           <button
+            className="secondary"
             onClick={() => setShowFrameTest(true)}
             disabled={isScanRunning}
-            title="Test OCR and PII detection on a single frame"
-            style={{ fontSize: 13 }}
+            title="Test OCR and PII detection on a single frame (diagnostic, no events created)"
           >
             Test Frame
           </button>
@@ -219,33 +306,101 @@ export function VideoPreview({ videoRef, style }: Props) {
 
         {project?.video && (
           <button
+            className="secondary"
+            onClick={handleScanFrame}
+            disabled={scanningFrame || isScanRunning || isScanPending}
+            title="Scan current frame for PII and add results as pending events"
+          >
+            {scanningFrame ? 'Scanning…' : 'Scan Frame'}
+          </button>
+        )}
+
+        {project?.video && (
+          <button
+            className={drawingMode ? 'primary' : 'secondary'}
             onClick={() => setDrawingMode(!drawingMode)}
             title="Draw a manual redaction box on the video"
-            style={{
-              fontSize: 13,
-              background: drawingMode ? 'var(--accent)' : undefined,
-              color: drawingMode ? '#fff' : undefined,
-              borderColor: drawingMode ? 'var(--accent)' : undefined,
-            }}
           >
             {drawingMode ? 'Drawing…' : 'Draw Box'}
           </button>
         )}
 
-        {importError && (
-          <span style={{ color: 'var(--reject)', fontSize: 12 }}>{importError}</span>
-        )}
-
-        {project?.video && (
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 4 }}>
-            {project.video.width}×{project.video.height} · {project.video.fps.toFixed(0)} fps · {project.video.codec}
-          </span>
-        )}
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+        {project?.video && drawingMode && (
           <button
+            className={staticDrawMode ? 'primary' : 'ghost'}
+            onClick={() => setStaticDrawMode(!staticDrawMode)}
+            title={staticDrawMode
+              ? 'Pin mode: drawn box stays at a fixed position for the entire video'
+              : 'Track mode: drawn box follows content using CSRT tracking'}
+            style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}
+          >
+            {staticDrawMode ? 'Pin' : 'Track'}
+          </button>
+        )}
+
+        {/* Range scan — collapsible group */}
+        {project?.video && (
+          <details style={{ position: 'relative' }}>
+            <summary style={{
+              cursor: 'pointer',
+              padding: 'var(--space-2) var(--space-4)',
+              minHeight: 36,
+              background: 'var(--glass-bg)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-md)',
+              fontSize: 'var(--font-size-body)',
+              color: 'var(--text-muted)',
+              listStyle: 'none',
+              display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)',
+              transition: 'all var(--transition-fast)',
+            }}>
+              Range ▾
+            </summary>
+            <div style={{
+              position: 'absolute', top: '100%', left: 0, zIndex: 20,
+              marginTop: 'var(--space-1)',
+              padding: 'var(--space-2)',
+              background: 'var(--surface)',
+              border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-md)',
+              boxShadow: 'var(--shadow-elevated)',
+              display: 'flex', gap: 'var(--space-2)', whiteSpace: 'nowrap',
+            }}>
+              <button className="secondary" onClick={() => setInPoint(currentTime)} title="Set in-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set In</button>
+              <button className="secondary" onClick={() => setOutPoint(currentTime)} title="Set out-point" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Set Out</button>
+              {inPoint !== null && outPoint !== null && (
+                <button className="primary" onClick={handleRangeScan} disabled={isScanPending || isScanRunning} title={`Scan ${formatMs(Math.min(inPoint, outPoint))} – ${formatMs(Math.max(inPoint, outPoint))}`} style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>
+                  Scan Range
+                </button>
+              )}
+              {(inPoint !== null || outPoint !== null) && (
+                <button className="ghost" onClick={() => { setInPoint(null); setOutPoint(null) }} title="Clear range markers" style={{ fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}>Clear</button>
+              )}
+            </div>
+          </details>
+        )}
+
+        {importError && (
+          <span style={{ color: 'var(--reject)', fontSize: 'var(--font-size-small)' }}>{importError}</span>
+        )}
+        {scanFrameMsg && (
+          <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>{scanFrameMsg}</span>
+        )}
+
+        {/* Toggles — right-aligned */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-2)' }}>
+          <button
+            className="ghost"
+            onClick={toggleLivePreviewMode}
+            style={{ opacity: livePreviewMode ? 1 : 0.4, fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)', transition: 'opacity var(--transition-normal)' }}
+            title="When paused, render actual blur/pixelate/solid_box effects on the canvas"
+          >
+            Preview Effects
+          </button>
+          <button
+            className="ghost"
             onClick={toggleRedactionAreas}
-            style={{ opacity: showRedactionAreas ? 1 : 0.45, fontSize: 12 }}
+            style={{ opacity: showRedactionAreas ? 1 : 0.4, fontSize: 'var(--font-size-small)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)', transition: 'opacity var(--transition-normal)' }}
             title="Toggle redaction preview"
           >
             Redactions
@@ -256,12 +411,15 @@ export function VideoPreview({ videoRef, style }: Props) {
       {/* Scan progress bar */}
       {(isScanPending || isScanRunning) && (
         <div style={{ height: 3, background: 'var(--border)', position: 'relative' }}>
-          <div style={{
-            position: 'absolute', left: 0, top: 0, height: '100%',
-            width: isScanPending ? '2%' : `${scanProgress.progressPct}%`,
-            background: 'var(--accent)',
-            transition: 'width 0.3s',
-          }} />
+          <div
+            className={scanProgress.stage === 'done' ? 'shimmer-bar' : undefined}
+            style={{
+              position: 'absolute', left: 0, top: 0, height: '100%',
+              width: isScanPending ? '2%' : `${scanProgress.progressPct}%`,
+              background: 'var(--accent)',
+              transition: 'width 0.3s',
+            }}
+          />
         </div>
       )}
 
@@ -282,16 +440,14 @@ export function VideoPreview({ videoRef, style }: Props) {
               <video
                 ref={videoRef}
                 src={proxyUrl}
-                style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
+                style={{ maxWidth: '100%', maxHeight: '100%', display: 'block', borderRadius: 'var(--radius-lg)' }}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={() => {
                   setDuration(Math.floor((videoRef.current?.duration ?? 0) * 1000))
                 }}
               />
             </div>
-            {/* Canvas sits OUTSIDE the zoom wrapper so it isn't scaled.
-                It uses getBoundingClientRect() on the video (post-transform coords)
-                to draw at the correct screen position regardless of zoom level. */}
+            {/* Canvas sits OUTSIDE the zoom wrapper so it isn't scaled. */}
             <OverlayCanvas
               videoRef={videoRef}
               containerRef={videoContainerRef}
@@ -300,18 +456,20 @@ export function VideoPreview({ videoRef, style }: Props) {
               projectId={project?.project_id ?? ''}
               sourceWidth={project?.video?.width ?? 0}
               sourceHeight={project?.video?.height ?? 0}
+              isPaused={!isPlaying}
             />
           </>
         ) : importing ? (
-          <div style={{ color: 'var(--text-muted)', textAlign: 'center' }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>⟳</div>
-            <div>Generating proxy video…</div>
-            <div style={{ fontSize: 12, marginTop: 4 }}>This may take a minute for large files</div>
+          <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <div style={{ fontSize: 'var(--font-size-title)', opacity: 0.4 }}>⟳</div>
+            <div style={{ fontWeight: 500 }}>Generating proxy video…</div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>This may take a minute for large files</div>
           </div>
         ) : (
-          <div style={{ color: 'var(--text-muted)', textAlign: 'center' }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>▶</div>
-            <div>Import a video to get started</div>
+          <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <div style={{ fontSize: 40, opacity: 0.3 }}>▶</div>
+            <div style={{ fontWeight: 500 }}>Import a video to get started</div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Drag and drop or click Import Video above</div>
           </div>
         )}
       </div>
@@ -319,24 +477,31 @@ export function VideoPreview({ videoRef, style }: Props) {
       {/* Video controls bar */}
       {proxyUrl && (
         <div style={{
-          padding: '6px 12px',
-          background: 'var(--surface)',
-          borderTop: '1px solid var(--border)',
-          display: 'flex', alignItems: 'center', gap: 10, fontSize: 13,
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'var(--surface-secondary)',
+          borderTop: '1px solid var(--border-hairline)',
+          display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 'var(--font-size-body)',
         }}>
           {/* Play/Pause */}
-          <button onClick={handlePlayPause} style={{ fontSize: 16, padding: '2px 8px', minWidth: 32 }}>
+          <button
+            onClick={handlePlayPause}
+            style={{
+              fontSize: 16, padding: 'var(--space-1) var(--space-2)', minWidth: 40, minHeight: 36,
+              background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-md)',
+              boxShadow: '0 0 12px rgba(216, 27, 96, 0.2)',
+            }}
+          >
             {isPlaying ? '⏸' : '▶'}
           </button>
 
           {/* Time */}
-          <span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          <span style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
             {formatMs(currentTime)} / {formatMs(duration)}
           </span>
 
           {/* Volume */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Vol</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>Vol</span>
             <input
               type="range" min={0} max={1} step={0.05}
               value={volume}
@@ -346,12 +511,12 @@ export function VideoPreview({ videoRef, style }: Props) {
           </div>
 
           {/* Speed */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Speed</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>Speed</span>
             <select
               value={playbackRate}
               onChange={handleRate}
-              style={{ fontSize: 12, background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 4, padding: '2px 4px' }}
+              style={{ fontSize: 'var(--font-size-small)', background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 'var(--space-1)', minHeight: 'auto' }}
             >
               {[0.25, 0.5, 0.75, 1, 1.5, 2].map((r) => (
                 <option key={r} value={r}>{r}×</option>
@@ -360,10 +525,10 @@ export function VideoPreview({ videoRef, style }: Props) {
           </div>
 
           {/* Zoom */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 'auto' }}>
-            <button onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))} style={{ fontSize: 14, padding: '1px 7px' }}>−</button>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)', minWidth: 28, textAlign: 'center' }}>{zoomLevel}×</span>
-            <button onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))} style={{ fontSize: 14, padding: '1px 7px' }}>+</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', marginLeft: 'auto' }}>
+            <button className="ghost" onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))} style={{ fontSize: 'var(--font-size-body)', padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32 }}>−</button>
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 28, textAlign: 'center' }}>{zoomLevel}×</span>
+            <button className="ghost" onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))} style={{ fontSize: 'var(--font-size-body)', padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32 }}>+</button>
           </div>
         </div>
       )}
@@ -374,6 +539,8 @@ export function VideoPreview({ videoRef, style }: Props) {
           durationMs={duration}
           currentTimeMs={currentTime}
           onSeek={handleSeek}
+          inPoint={inPoint}
+          outPoint={outPoint}
         />
       )}
 

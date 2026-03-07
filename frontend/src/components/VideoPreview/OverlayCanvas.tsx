@@ -5,7 +5,10 @@
  * 1. Draw redaction region previews for all active events (colour-coded by status)
  * 2. Draw test-frame result boxes in cyan when a frame test is active
  * 3. Draw resize handles on the selected event; allow drag-to-resize
- * 4. Allow click-drag box drawing in draw mode; create a new manual RedactionEvent
+ * 4. Allow drag-to-move on any selected event box (not on a handle)
+ * 5. Allow click-drag box drawing in draw mode; create a new manual RedactionEvent
+ * 6. Render actual blur/pixelate/solid_box effects when the video is paused
+ *    and livePreviewMode is enabled
  *
  * Coordinate spaces:
  * - RedactionEvent keyframe bboxes are stored in **source video** pixel space.
@@ -14,9 +17,10 @@
  * - All screen rendering: multiply by scaleX/scaleY (proxy → screen).
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { addEventToProject, trackManualEvent, updateEventKeyframes } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
+import { theme } from '../../styles/theme'
 import type { BoundingBox, Keyframe, RedactionEvent } from '../../types'
 
 interface Props {
@@ -27,6 +31,7 @@ interface Props {
   projectId: string
   sourceWidth: number   // native source video width (for coordinate correction)
   sourceHeight: number  // native source video height
+  isPaused: boolean     // true when the video is paused (enables live style preview)
 }
 
 // Handle size in screen pixels
@@ -34,6 +39,12 @@ const HANDLE_SIZE = 8
 const HANDLE_HIT = 12  // generous hit target
 
 type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
+
+const HANDLE_CURSORS: Record<HandleId, string> = {
+  nw: 'nw-resize', n: 'n-resize', ne: 'ne-resize',
+  e: 'e-resize', se: 'se-resize', s: 's-resize',
+  sw: 'sw-resize', w: 'w-resize',
+}
 
 function getHandlePoints(rx: number, ry: number, rw: number, rh: number): Record<HandleId, [number, number]> {
   return {
@@ -71,6 +82,20 @@ function applyHandleDrag(
   return { x, y, w, h }
 }
 
+// Match backend _BBOX_PAD_PCT and _TEMPORAL_PAD_MS for WYSIWYG preview
+const BBOX_PAD_PCT = 0.15
+const TEMPORAL_PAD_MS = 500
+
+function padBbox(bbox: BoundingBox, srcW: number, srcH: number, padPct = BBOX_PAD_PCT): BoundingBox {
+  const dx = Math.round(bbox.w * padPct)
+  const dy = Math.round(bbox.h * padPct)
+  const x = Math.max(0, bbox.x - dx)
+  const y = Math.max(0, bbox.y - dy)
+  const w = Math.min(srcW - x, bbox.w + 2 * dx)
+  const h = Math.min(srcH - y, bbox.h + 2 * dy)
+  return { x, y, w, h }
+}
+
 export function OverlayCanvas({
   videoRef,
   containerRef,
@@ -79,6 +104,7 @@ export function OverlayCanvas({
   projectId,
   sourceWidth,
   sourceHeight,
+  isPaused,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -89,8 +115,11 @@ export function OverlayCanvas({
     addEvent,
     updateEvent,
     testFrameOverlay,
+    scanPreviewFrame,
     drawingMode,
     setDrawingMode,
+    staticDrawMode,
+    livePreviewMode,
   } = useProjectStore((s) => ({
     events: s.events,
     selectedEventId: s.selectedEventId,
@@ -98,8 +127,11 @@ export function OverlayCanvas({
     addEvent: s.addEvent,
     updateEvent: s.updateEvent,
     testFrameOverlay: s.testFrameOverlay,
+    scanPreviewFrame: s.scanPreviewFrame,
     drawingMode: s.drawingMode,
     setDrawingMode: s.setDrawingMode,
+    staticDrawMode: s.staticDrawMode,
+    livePreviewMode: s.livePreviewMode,
   }))
 
   // Mouse interaction state (refs to avoid triggering re-renders on every frame)
@@ -111,6 +143,13 @@ export function OverlayCanvas({
     origBbox: BoundingBox
     startScreen: { x: number; y: number }
   } | null>(null)
+  const moveState = useRef<{
+    event: RedactionEvent
+    startMouseSrc: { x: number; y: number }
+    origBbox: BoundingBox
+  } | null>(null)
+
+  const [cursorStyle, setCursorStyle] = useState<string>('default')
 
   // ── Scale helpers ──────────────────────────────────────────────────────────
 
@@ -178,44 +217,103 @@ export function OverlayCanvas({
       const activeEvents = events.filter((event) => {
         if (event.status === 'rejected') return false
         return event.time_ranges.some(
-          (r) => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms
+          (r) => currentTimeMs >= r.start_ms - TEMPORAL_PAD_MS && currentTimeMs <= r.end_ms + TEMPORAL_PAD_MS
         )
       })
 
-      for (const event of activeEvents) {
-        const bbox = interpolateBbox(event, currentTimeMs)
-        if (!bbox) continue
+      // Live style preview: render actual blur/pixelate/solid_box effects when paused
+      if (isPaused && livePreviewMode && activeEvents.length > 0) {
+        for (const event of activeEvents) {
+          const rawBbox = interpolateBbox(event, currentTimeMs)
+          if (!rawBbox) continue
+          const bbox = padBbox(rawBbox, sourceWidth, sourceHeight)
 
-        const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
-        const isSelected = event.event_id === selectedEventId
-        const isPending = event.status === 'pending'
+          const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
 
-        ctx.fillStyle = isSelected
-          ? 'rgba(91, 124, 246, 0.25)'
-          : isPending
-          ? 'rgba(240, 160, 80, 0.2)'
-          : 'rgba(61, 202, 126, 0.2)'
-        ctx.fillRect(rx, ry, rw, rh)
+          // Source rect in proxy pixel coords (for drawImage)
+          const vx = bbox.x * s.srcToProxyX
+          const vy = bbox.y * s.srcToProxyY
+          const vw = bbox.w * s.srcToProxyX
+          const vh = bbox.h * s.srcToProxyY
 
-        ctx.strokeStyle = isSelected ? '#5b7cf6' : isPending ? '#f0a050' : '#3dca7e'
-        ctx.lineWidth = isSelected ? 2 : 1
-        ctx.setLineDash(isPending ? [4, 2] : [])
-        ctx.strokeRect(rx, ry, rw, rh)
-        ctx.setLineDash([])
+          const styleType = event.redaction_style.type
+          const strength = event.redaction_style.strength
 
-        ctx.font = '10px system-ui'
-        ctx.fillStyle = ctx.strokeStyle
-        ctx.fillText(event.pii_type.toUpperCase(), rx + 3, ry - 3)
+          if (styleType === 'blur') {
+            ctx.save()
+            ctx.filter = `blur(${Math.max(2, strength / 2)}px)`
+            ctx.drawImage(video, vx, vy, vw, vh, rx, ry, rw, rh)
+            ctx.restore()
+          } else if (styleType === 'pixelate') {
+            const blockSize = Math.max(1, strength)
+            const blockW = Math.max(1, Math.round(vw / blockSize))
+            const blockH = Math.max(1, Math.round(vh / blockSize))
+            const off = document.createElement('canvas')
+            off.width = blockW
+            off.height = blockH
+            const offCtx = off.getContext('2d')
+            if (offCtx) {
+              offCtx.drawImage(video, vx, vy, vw, vh, 0, 0, blockW, blockH)
+              ctx.imageSmoothingEnabled = false
+              ctx.drawImage(off, 0, 0, blockW, blockH, rx, ry, rw, rh)
+              ctx.imageSmoothingEnabled = true
+            }
+          } else {
+            // solid_box
+            ctx.fillStyle = event.redaction_style.color || '#000000'
+            ctx.fillRect(rx, ry, rw, rh)
+          }
 
-        // Resize handles for the selected event
-        if (isSelected) {
-          const handles = getHandlePoints(rx, ry, rw, rh)
-          ctx.fillStyle = '#5b7cf6'
-          ctx.strokeStyle = '#fff'
-          ctx.lineWidth = 1
-          for (const [hx, hy] of Object.values(handles)) {
-            ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
-            ctx.strokeRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+          // Draw resize handles on top so user can still interact
+          if (event.event_id === selectedEventId) {
+            const handles = getHandlePoints(rx, ry, rw, rh)
+            ctx.fillStyle = theme.accent
+            ctx.strokeStyle = theme.white
+            ctx.lineWidth = 1
+            for (const [hx, hy] of Object.values(handles)) {
+              ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+              ctx.strokeRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+            }
+          }
+        }
+      } else {
+        // Placeholder colored boxes (standard behavior)
+        for (const event of activeEvents) {
+          const rawBbox = interpolateBbox(event, currentTimeMs)
+          if (!rawBbox) continue
+          const bbox = padBbox(rawBbox, sourceWidth, sourceHeight)
+
+          const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+          const isSelected = event.event_id === selectedEventId
+          const isPending = event.status === 'pending'
+
+          ctx.fillStyle = isSelected
+            ? theme.accentFill
+            : isPending
+            ? theme.pendingFill
+            : theme.acceptFill
+          ctx.fillRect(rx, ry, rw, rh)
+
+          ctx.strokeStyle = isSelected ? theme.accent : isPending ? theme.pending : theme.accept
+          ctx.lineWidth = isSelected ? 2 : 1
+          ctx.setLineDash(isPending ? [4, 2] : [])
+          ctx.strokeRect(rx, ry, rw, rh)
+          ctx.setLineDash([])
+
+          ctx.font = `10px ${theme.fontFamily}`
+          ctx.fillStyle = ctx.strokeStyle
+          ctx.fillText(event.pii_type.toUpperCase(), rx + 3, ry - 3)
+
+          // Resize handles for the selected event
+          if (isSelected) {
+            const handles = getHandlePoints(rx, ry, rw, rh)
+            ctx.fillStyle = theme.accent
+            ctx.strokeStyle = theme.white
+            ctx.lineWidth = 1
+            for (const [hx, hy] of Object.values(handles)) {
+              ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+              ctx.strokeRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE)
+            }
           }
         }
       }
@@ -226,14 +324,33 @@ export function OverlayCanvas({
       for (const box of testFrameOverlay) {
         const [bx, by, bw, bh] = box.bbox
         const { rx, ry, rw, rh } = srcBboxToScreen({ x: bx, y: by, w: bw, h: bh }, s)
-        ctx.fillStyle = 'rgba(0, 220, 255, 0.18)'
+        ctx.fillStyle = theme.testFrameFill
         ctx.fillRect(rx, ry, rw, rh)
-        ctx.strokeStyle = '#00dcff'
+        ctx.strokeStyle = theme.testFrame
         ctx.lineWidth = 2
         ctx.setLineDash([])
         ctx.strokeRect(rx, ry, rw, rh)
-        ctx.font = '10px system-ui'
-        ctx.fillStyle = '#00dcff'
+        ctx.font = `10px ${theme.fontFamily}`
+        ctx.fillStyle = theme.testFrame
+        ctx.fillText(box.pii_type.toUpperCase(), rx + 3, ry - 3)
+      }
+    }
+
+    // ── Scan preview boxes (amber) ──
+    // Shown during an active scan: each OCR frame's detected PII boxes are drawn
+    // here so the user can see what the scanner is finding in real time.
+    if (scanPreviewFrame && scanPreviewFrame.boxes.length > 0) {
+      for (const box of scanPreviewFrame.boxes) {
+        const [bx, by, bw, bh] = box.bbox
+        const { rx, ry, rw, rh } = srcBboxToScreen({ x: bx, y: by, w: bw, h: bh }, s)
+        ctx.fillStyle = theme.scanPreviewFill
+        ctx.fillRect(rx, ry, rw, rh)
+        ctx.strokeStyle = theme.scanPreview
+        ctx.lineWidth = 2
+        ctx.setLineDash([])
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.font = `10px ${theme.fontFamily}`
+        ctx.fillStyle = theme.scanPreview
         ctx.fillText(box.pii_type.toUpperCase(), rx + 3, ry - 3)
       }
     }
@@ -246,7 +363,7 @@ export function OverlayCanvas({
       const h = Math.abs(drawCurrent.current.ny - drawStart.current.ny)
       if (w > 4 && h > 4) {
         const { rx, ry, rw, rh } = srcBboxToScreen({ x, y, w, h }, s)
-        ctx.strokeStyle = '#fff'
+        ctx.strokeStyle = theme.white
         ctx.lineWidth = 2
         ctx.setLineDash([6, 3])
         ctx.strokeRect(rx, ry, rw, rh)
@@ -255,7 +372,7 @@ export function OverlayCanvas({
         ctx.fillRect(rx, ry, rw, rh)
       }
     }
-  }, [currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, drawingMode])
+  }, [currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, isPaused, livePreviewMode])
 
   // ── Mouse event handlers ───────────────────────────────────────────────────
 
@@ -289,7 +406,7 @@ export function OverlayCanvas({
       }
     }
 
-    // Priority 2: click inside an active event box to select it
+    // Priority 2: click inside an active event box — select it AND start a move drag
     for (const event of [...events].reverse()) {
       if (event.status === 'rejected') continue
       const active = event.time_ranges.some(r => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms)
@@ -299,6 +416,12 @@ export function OverlayCanvas({
       const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
       if (mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh) {
         selectEvent(event.event_id)
+        const srcPos = screenToSrc(mx, my, s)
+        moveState.current = {
+          event,
+          startMouseSrc: { x: srcPos.nx, y: srcPos.ny },
+          origBbox: { ...bbox },
+        }
         return
       }
     }
@@ -319,10 +442,39 @@ export function OverlayCanvas({
     const mx = e.clientX - canvasRect.left
     const my = e.clientY - canvasRect.top
 
+    // Move drag in progress: update preview box directly on canvas
+    if (moveState.current) {
+      const srcPos = screenToSrc(mx, my, s)
+      const dx = srcPos.nx - moveState.current.startMouseSrc.x
+      const dy = srcPos.ny - moveState.current.startMouseSrc.y
+      const orig = moveState.current.origBbox
+      const previewBbox: BoundingBox = {
+        x: Math.round(orig.x + dx),
+        y: Math.round(orig.y + dy),
+        w: orig.w,
+        h: orig.h,
+      }
+      const { rx, ry, rw, rh } = srcBboxToScreen(previewBbox, s)
+      const containerRect = containerRef.current!.getBoundingClientRect()
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        canvas.width = containerRect.width
+        canvas.height = containerRect.height
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.fillStyle = theme.accentFill
+        ctx.fillRect(rx, ry, rw, rh)
+        ctx.strokeStyle = theme.accent
+        ctx.lineWidth = 2
+        ctx.setLineDash([4, 2])
+        ctx.strokeRect(rx, ry, rw, rh)
+        ctx.setLineDash([])
+      }
+      return
+    }
+
     if (drawingMode && drawStart.current) {
       const { nx, ny } = screenToSrc(mx, my, s)
       drawCurrent.current = { nx, ny }
-      // Draw the live drag rect directly on the canvas
       const ctx = canvas.getContext('2d')
       if (ctx) {
         const containerRect = containerRef.current!.getBoundingClientRect()
@@ -333,7 +485,7 @@ export function OverlayCanvas({
         const h = Math.abs(ny - drawStart.current.ny)
         if (w > 4 && h > 4) {
           const { rx, ry, rw, rh } = srcBboxToScreen({ x, y, w, h }, s)
-          ctx.strokeStyle = '#fff'
+          ctx.strokeStyle = theme.white
           ctx.lineWidth = 2
           ctx.setLineDash([6, 3])
           ctx.strokeRect(rx, ry, rw, rh)
@@ -342,7 +494,51 @@ export function OverlayCanvas({
           ctx.fillRect(rx, ry, rw, rh)
         }
       }
+      return
     }
+
+    // Update cursor based on what is under the mouse (no drag in progress)
+    if (drawingMode) {
+      setCursorStyle('crosshair')
+      return
+    }
+
+    if (selectedEventId) {
+      const selEvent = events.find((ev) => ev.event_id === selectedEventId)
+      if (selEvent) {
+        const bbox = interpolateBbox(selEvent, currentTimeMs)
+        if (bbox) {
+          const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+          const handles = getHandlePoints(rx, ry, rw, rh)
+          const hit = hitHandle(mx, my, handles)
+          if (hit) {
+            setCursorStyle(HANDLE_CURSORS[hit])
+            return
+          }
+          // Inside the box body (not on a handle) → move cursor
+          if (mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh) {
+            setCursorStyle('move')
+            return
+          }
+        }
+      }
+    }
+
+    // Check any other active event for hover
+    for (const event of [...events].reverse()) {
+      if (event.status === 'rejected') continue
+      const active = event.time_ranges.some(r => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms)
+      if (!active) continue
+      const bbox = interpolateBbox(event, currentTimeMs)
+      if (!bbox) continue
+      const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+      if (mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh) {
+        setCursorStyle('move')
+        return
+      }
+    }
+
+    setCursorStyle('default')
   }
 
   const handleMouseUp = async (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -365,7 +561,6 @@ export function OverlayCanvas({
 
       const newBbox = applyHandleDrag(origBbox, handle, dxSrc, dySrc)
 
-      // Find nearest keyframe and update it
       const kfs = event.keyframes
       let nearest = kfs[0]
       let minDiff = Infinity
@@ -380,7 +575,6 @@ export function OverlayCanvas({
           kf.time_ms === currentTimeMs ? { ...kf, bbox: newBbox } : kf
         )
       } else {
-        // Insert new keyframe at current time with resized bbox
         const newKf: Keyframe = { time_ms: currentTimeMs, bbox: newBbox }
         updatedKfs = [...kfs, newKf].sort((a, b) => a.time_ms - b.time_ms)
       }
@@ -391,6 +585,53 @@ export function OverlayCanvas({
         await updateEventKeyframes(projectId, event.event_id, updatedKfs)
       } catch (err) {
         console.error('Failed to save resized keyframe:', err)
+      }
+      return
+    }
+
+    // Finish move
+    if (moveState.current) {
+      const { event, startMouseSrc, origBbox } = moveState.current
+      moveState.current = null
+
+      const srcPos = screenToSrc(mx, my, s)
+      const dx = srcPos.nx - startMouseSrc.x
+      const dy = srcPos.ny - startMouseSrc.y
+
+      // Only commit if the box actually moved (not a mere click)
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return
+
+      const newBbox: BoundingBox = {
+        x: Math.round(origBbox.x + dx),
+        y: Math.round(origBbox.y + dy),
+        w: origBbox.w,
+        h: origBbox.h,
+      }
+
+      const kfs = event.keyframes
+      let nearest = kfs[0]
+      let minDiff = Infinity
+      for (const kf of kfs) {
+        const diff = Math.abs(kf.time_ms - currentTimeMs)
+        if (diff < minDiff) { minDiff = diff; nearest = kf }
+      }
+
+      let updatedKfs: Keyframe[]
+      if (nearest && nearest.time_ms === currentTimeMs) {
+        updatedKfs = kfs.map((kf) =>
+          kf.time_ms === currentTimeMs ? { ...kf, bbox: newBbox } : kf
+        )
+      } else {
+        const newKf: Keyframe = { time_ms: currentTimeMs, bbox: newBbox }
+        updatedKfs = [...kfs, newKf].sort((a, b) => a.time_ms - b.time_ms)
+      }
+
+      const updated = { ...event, keyframes: updatedKfs }
+      updateEvent(updated)
+      try {
+        await updateEventKeyframes(projectId, event.event_id, updatedKfs)
+      } catch (err) {
+        console.error('Failed to save moved keyframe:', err)
       }
       return
     }
@@ -408,7 +649,7 @@ export function OverlayCanvas({
       if (w >= 10 && h >= 10) {
         const newEvent: RedactionEvent = {
           event_id: crypto.randomUUID(),
-          source: 'auto',
+          source: 'manual',
           pii_type: 'manual',
           confidence: 1.0,
           extracted_text: null,
@@ -424,9 +665,10 @@ export function OverlayCanvas({
           addEvent(saved)
           setDrawingMode(false)
 
-          // Run CSRT tracking forward from the drawn keyframe
           try {
-            const tracked = await trackManualEvent(projectId, saved.event_id)
+            const tracked = await trackManualEvent(projectId, saved.event_id, {
+              static: staticDrawMode,
+            })
             updateEvent(tracked)
           } catch (err) {
             console.warn('Tracking failed for manual box (single-frame redaction kept):', err)
@@ -438,7 +680,10 @@ export function OverlayCanvas({
     }
   }
 
-  const needsPointerEvents = drawingMode || selectedEventId !== null
+  const needsPointerEvents = drawingMode || selectedEventId !== null || events.some((ev) => {
+    if (ev.status === 'rejected') return false
+    return ev.time_ranges.some(r => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms)
+  })
 
   return (
     <canvas
@@ -450,7 +695,7 @@ export function OverlayCanvas({
         position: 'absolute',
         pointerEvents: needsPointerEvents ? 'auto' : 'none',
         zIndex: 5,
-        cursor: drawingMode ? 'crosshair' : resizeState.current ? 'nwse-resize' : 'default',
+        cursor: drawingMode ? 'crosshair' : cursorStyle,
       }}
     />
   )
