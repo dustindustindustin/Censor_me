@@ -111,6 +111,7 @@ class ScanOrchestrator:
         interval = self._project.scan_settings.ocr_sample_interval
         scale = self._project.scan_settings.ocr_resolution_scale
         confidence_threshold = self._project.scan_settings.confidence_threshold
+        default_style = self._project.scan_settings.default_redaction_style
 
         logger.info(
             "Scan starting — video: %s | interval: every %d frames | scale: %.1f | threshold: %.2f | GPU: %s",
@@ -250,7 +251,7 @@ class ScanOrchestrator:
                 "progress_pct": min(pct, 100),
             })
 
-        events = link_candidates(all_candidates, on_progress=_link_progress)
+        events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)
         self._emit({"stage": "link_done", "events_found": len(events)})
 
         # --- Stage 4.5: Boundary Refinement ---
@@ -314,7 +315,7 @@ class ScanOrchestrator:
 
             if refine_candidates:
                 all_candidates.extend(refine_candidates)
-                events = link_candidates(all_candidates, on_progress=_link_progress)
+                events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)
                 self._emit({"stage": "refine_done", "events_found": len(events),
                              "extra_candidates": len(refine_candidates)})
 

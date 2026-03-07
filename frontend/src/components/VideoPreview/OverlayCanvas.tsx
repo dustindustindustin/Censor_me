@@ -109,6 +109,7 @@ export function OverlayCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const {
+    project,
     events,
     selectedEventId,
     selectEvent,
@@ -121,6 +122,7 @@ export function OverlayCanvas({
     staticDrawMode,
     livePreviewMode,
   } = useProjectStore((s) => ({
+    project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
     selectEvent: s.selectEvent,
@@ -656,7 +658,7 @@ export function OverlayCanvas({
           time_ranges: [{ start_ms: currentTimeMs, end_ms: currentTimeMs }],
           keyframes: [{ time_ms: currentTimeMs, bbox: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) } }],
           tracking_method: 'none',
-          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          redaction_style: project?.scan_settings?.default_redaction_style ?? { type: 'blur', strength: 15, color: '#000000' },
           status: 'accepted',
         }
 

@@ -10,7 +10,7 @@ Output: list of RedactionEvent with time ranges and keyframes populated.
 
 from typing import Callable
 
-from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, RedactionEvent, TimeRange
+from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, RedactionEvent, RedactionStyle, TimeRange
 from backend.services.pii_classifier import PiiCandidate
 
 
@@ -47,6 +47,7 @@ def _center_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 def link_candidates(
     candidates: list[PiiCandidate],
     on_progress: Callable[[int, int], None] | None = None,
+    default_style: RedactionStyle | None = None,
 ) -> list[RedactionEvent]:
     """
     Group PII candidates from all frames into time-linked RedactionEvents.
@@ -65,7 +66,7 @@ def link_candidates(
         if matched_event:
             _extend_event(matched_event, candidate)
         else:
-            events.append(_create_event(candidate))
+            events.append(_create_event(candidate, default_style))
 
         if on_progress and (i + 1) % 50 == 0:
             on_progress(i + 1, total)
@@ -122,10 +123,10 @@ def _find_matching_event(
     return None
 
 
-def _create_event(candidate: PiiCandidate) -> RedactionEvent:
+def _create_event(candidate: PiiCandidate, default_style: RedactionStyle | None = None) -> RedactionEvent:
     """Create a new RedactionEvent from a PII candidate."""
     x, y, w, h = candidate.bbox
-    return RedactionEvent(
+    kwargs: dict = dict(
         source="auto",
         pii_type=candidate.pii_type,
         confidence=candidate.confidence,
@@ -134,6 +135,9 @@ def _create_event(candidate: PiiCandidate) -> RedactionEvent:
         keyframes=[Keyframe(time_ms=candidate.source_time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))],
         status=EventStatus.PENDING,
     )
+    if default_style is not None:
+        kwargs["redaction_style"] = default_style
+    return RedactionEvent(**kwargs)
 
 
 def _extend_event(event: RedactionEvent, candidate: PiiCandidate) -> None:

@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from backend.models.events import RedactionEvent
+from backend.models.events import RedactionEvent, RedactionStyle
 
 
 class VideoMetadata(BaseModel):
@@ -132,6 +132,13 @@ class ScanSettings(BaseModel):
         description=(
             "When True, ``extracted_text`` is never stored in the project file. "
             "Findings are tracked by bbox/time only. Reduces PII exposure at rest."
+        )
+    )
+    default_redaction_style: RedactionStyle = Field(
+        default_factory=RedactionStyle,
+        description=(
+            "Default redaction style applied to new events created by scans or "
+            "manual drawing. Changing this affects future events only."
         )
     )
 

@@ -41,10 +41,12 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
   // Whether the user has committed the selection ("Add to Censor List" was clicked)
   const [committed, setCommitted] = useState(false)
   const [committing, setCommitting] = useState(false)
-  const { addEvent, setTestFrameOverlay } = useProjectStore((s) => ({
+  const { project, addEvent, setTestFrameOverlay } = useProjectStore((s) => ({
+    project: s.project,
     addEvent: s.addEvent,
     setTestFrameOverlay: s.setTestFrameOverlay,
   }))
+  const defaultStyle = project?.scan_settings?.default_redaction_style ?? { type: 'blur' as const, strength: 15, color: '#000000' }
   const inputRef = useRef<HTMLInputElement>(null)
 
   const runTest = async (idx: number) => {
@@ -118,7 +120,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
           time_ranges: [{ start_ms: res.time_ms, end_ms: res.time_ms }],
           keyframes: [{ time_ms: res.time_ms, bbox: { x, y, w, h } }],
           tracking_method: 'none',
-          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          redaction_style: defaultStyle,
           status: 'accepted',
         }
         const saved = await addEventToProject(projectId, event)
@@ -136,7 +138,7 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
           time_ranges: [{ start_ms: res.time_ms, end_ms: res.time_ms }],
           keyframes: [{ time_ms: res.time_ms, bbox: { x, y, w, h } }],
           tracking_method: 'none',
-          redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+          redaction_style: defaultStyle,
           status: 'accepted',
         }
         const saved = await addEventToProject(projectId, event)

@@ -405,6 +405,7 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
 
         new_events = []
         tracker = TrackerService()
+        default_style = project.scan_settings.default_redaction_style
         for c in candidates:
             bx, by, bw, bh = c.bbox
             event = RedactionEvent(
@@ -415,6 +416,7 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
                 time_ranges=[TimeRange(start_ms=time_ms, end_ms=time_ms)],
                 keyframes=[Keyframe(time_ms=time_ms, bbox=BoundingBox(x=bx, y=by, w=bw, h=bh))],
                 tracking_method="csrt",
+                redaction_style=default_style,
                 status="pending",
             )
             # track_event is a no-op for single-keyframe events; included for future compat

@@ -190,6 +190,7 @@ export interface ScanSettings {
   ocr_resolution_scale: number
   confidence_threshold: number
   secure_mode: boolean
+  default_redaction_style: RedactionStyle
 }
 
 export interface OutputSettings {

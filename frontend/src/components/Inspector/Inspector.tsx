@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, startExport, startScan, updateEventStatus, updateEventStyle } from '../../api/client'
+import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, startExport, startScan, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
 import type { RedactionStyle, RedactionStyleType } from '../../types'
@@ -27,7 +27,7 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
 }
 
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
@@ -37,6 +37,7 @@ export function Inspector({ style }: Props) {
     bulkUpdateEventStyle: s.bulkUpdateEventStyle,
     scanProgress: s.scanProgress,
     setScanId: s.setScanId,
+    updateProjectSettingsLocal: s.updateProjectSettings,
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
@@ -69,14 +70,21 @@ export function Inspector({ style }: Props) {
     }
   }, [scanProgress.isRunning])
 
-  // Sync global style controls from the first event when the project changes.
-  // Gives sensible defaults without requiring the user to set them from scratch.
+  // Sync global style controls from the project's default style when the project
+  // changes. Falls back to the first event's style for backwards compatibility
+  // with projects that predate the default_redaction_style setting.
   useEffect(() => {
-    if (events.length === 0) return
-    const s = events[0].redaction_style
-    setGlobalType(s.type)
-    setGlobalStrength(s.strength)
-    setGlobalColor(s.color)
+    const defaultStyle = project?.scan_settings?.default_redaction_style
+    if (defaultStyle) {
+      setGlobalType(defaultStyle.type)
+      setGlobalStrength(defaultStyle.strength)
+      setGlobalColor(defaultStyle.color)
+    } else if (events.length > 0) {
+      const s = events[0].redaction_style
+      setGlobalType(s.type)
+      setGlobalStrength(s.strength)
+      setGlobalColor(s.color)
+    }
   }, [project?.project_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear per-event debounce timers if event changes to avoid saving to the wrong event
@@ -95,35 +103,56 @@ export function Inspector({ style }: Props) {
     }
   }, [])
 
-  // ── Global style handlers (apply to all events) ────────────────────────────
+  // ── Global style handlers (apply to all events + save as project default) ──
+
+  /** Persist style as the project's default for future events. */
+  const saveDefaultStyle = (style: RedactionStyle) => {
+    if (!project) return
+    const newScan = { ...project.scan_settings, default_redaction_style: style }
+    updateProjectSettingsLocal(newScan, project.output_settings)
+    updateProjectSettings(project.project_id, newScan, project.output_settings).catch(console.error)
+  }
 
   const handleGlobalType = (type: RedactionStyleType) => {
-    if (!project || events.length === 0) return
+    if (!project) return
     const newStyle: RedactionStyle = { type, strength: globalStrength, color: globalColor }
     setGlobalType(type)
-    bulkUpdateStyleLocal(newStyle)
-    bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+    saveDefaultStyle(newStyle)
+    if (events.length > 0) {
+      bulkUpdateStyleLocal(newStyle)
+      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+    }
   }
 
   const handleGlobalStrength = (value: number) => {
-    if (!project || events.length === 0) return
+    if (!project) return
     const newStyle: RedactionStyle = { type: globalType, strength: value, color: globalColor }
     setGlobalStrength(value)
-    bulkUpdateStyleLocal(newStyle)
+    if (events.length > 0) {
+      bulkUpdateStyleLocal(newStyle)
+    }
     if (globalStrengthTimer.current) clearTimeout(globalStrengthTimer.current)
     globalStrengthTimer.current = setTimeout(() => {
-      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+      saveDefaultStyle(newStyle)
+      if (events.length > 0) {
+        bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+      }
     }, 400)
   }
 
   const handleGlobalColor = (color: string) => {
-    if (!project || events.length === 0) return
+    if (!project) return
     const newStyle: RedactionStyle = { type: globalType, strength: globalStrength, color }
     setGlobalColor(color)
-    bulkUpdateStyleLocal(newStyle)
+    if (events.length > 0) {
+      bulkUpdateStyleLocal(newStyle)
+    }
     if (globalColorTimer.current) clearTimeout(globalColorTimer.current)
     globalColorTimer.current = setTimeout(() => {
-      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+      saveDefaultStyle(newStyle)
+      if (events.length > 0) {
+        bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+      }
     }, 400)
   }
 
