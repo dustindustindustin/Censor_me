@@ -399,3 +399,11 @@ export async function getReport(projectId: string, format: 'json' | 'html' = 'js
   const { data } = await api.get(`/export/${projectId}/report`, { params: { format } })
   return data
 }
+
+/**
+ * Return the URL to download an audit report in the given format.
+ * Use as an href or with window.open() for direct browser download.
+ */
+export function reportDownloadUrl(projectId: string, format: 'json' | 'html' = 'html'): string {
+  return `/api/export/${projectId}/report?format=${format}`
+}

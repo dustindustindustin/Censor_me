@@ -139,9 +139,12 @@ export function VideoPreview({ videoRef, style }: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [rangeOpen])
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!project || !e.target.files?.[0]) return
-    const file = e.target.files[0]
+  const [dragOver, setDragOver] = useState(false)
+
+  const VALID_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.avi', '.webm']
+
+  const doImport = async (file: File) => {
+    if (!project) return
     setImportError(null)
     setImporting(true)
     try {
@@ -153,8 +156,37 @@ export function VideoPreview({ videoRef, style }: Props) {
       setImportError(msg)
     } finally {
       setImporting(false)
-      e.target.value = ''
     }
+  }
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0]) return
+    await doImport(e.target.files[0])
+    e.target.value = ''
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    if (!project || importing || proxyUrl) return
+    const file = e.dataTransfer.files[0]
+    if (!file) return
+    const ext = '.' + file.name.split('.').pop()?.toLowerCase()
+    if (!VALID_EXTENSIONS.includes(ext)) {
+      setImportError(`Unsupported format. Use: ${VALID_EXTENSIONS.join(', ')}`)
+      return
+    }
+    doImport(file)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (!proxyUrl && !importing) setDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
   }
 
   const handleScan = async () => {
@@ -450,6 +482,9 @@ export function VideoPreview({ videoRef, style }: Props) {
       {/* Video + overlay */}
       <div
         ref={videoContainerRef}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
         style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}
       >
         {proxyUrl ? (
@@ -490,7 +525,23 @@ export function VideoPreview({ videoRef, style }: Props) {
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>This may take a minute for large files</div>
           </div>
         ) : (
-          <img src={videoBg} alt="" style={{ maxWidth: '80%', maxHeight: '80%', objectFit: 'contain', pointerEvents: 'none' }} />
+          <div
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              width: '100%', height: '100%',
+              border: dragOver ? '2px dashed var(--accent)' : '2px dashed transparent',
+              borderRadius: 'var(--radius-lg)',
+              background: dragOver ? 'rgba(216, 27, 96, 0.05)' : 'transparent',
+              transition: 'all var(--transition-fast)',
+            }}
+          >
+            <img src={videoBg} alt="" style={{ maxWidth: '80%', maxHeight: '60%', objectFit: 'contain', pointerEvents: 'none', opacity: dragOver ? 0.4 : 1 }} />
+            {dragOver && (
+              <div style={{ marginTop: 'var(--space-4)', fontSize: 'var(--font-size-body)', color: 'var(--accent)', fontWeight: 500 }}>
+                Drop video here
+              </div>
+            )}
+          </div>
         )}
       </div>
 

@@ -130,6 +130,7 @@ export function OverlayCanvas({
     staticDrawMode,
     livePreviewMode,
     addNotification,
+    pushUndo,
   } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
@@ -144,6 +145,7 @@ export function OverlayCanvas({
     staticDrawMode: s.staticDrawMode,
     livePreviewMode: s.livePreviewMode,
     addNotification: s.addNotification,
+    pushUndo: s.pushUndo,
   }))
 
   // Mouse interaction state (refs to avoid triggering re-renders on every frame)
@@ -605,6 +607,7 @@ export function OverlayCanvas({
 
       const newBbox = applyHandleDrag(origBbox, handle, dxSrc, dySrc)
       const updatedKfs = upsertKeyframe(event.keyframes, currentTimeMs, newBbox)
+      pushUndo({ type: 'keyframes', eventId: event.event_id, before: { keyframes: [...event.keyframes] }, after: { keyframes: updatedKfs } })
       const updated = { ...event, keyframes: updatedKfs }
       updateEvent(updated)
       try {
@@ -635,6 +638,7 @@ export function OverlayCanvas({
         h: origBbox.h,
       }
       const updatedKfs = upsertKeyframe(event.keyframes, currentTimeMs, newBbox)
+      pushUndo({ type: 'keyframes', eventId: event.event_id, before: { keyframes: [...event.keyframes] }, after: { keyframes: updatedKfs } })
       const updated = { ...event, keyframes: updatedKfs }
       updateEvent(updated)
       try {
@@ -672,6 +676,7 @@ export function OverlayCanvas({
 
         try {
           const saved = await addEventToProject(projectId, newEvent)
+          pushUndo({ type: 'add_event', before: null, after: { event: saved } })
           addEvent(saved)
           setDrawingMode(false)
 

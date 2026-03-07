@@ -25,6 +25,20 @@
 import { create } from 'zustand'
 import type { OutputSettings, Project, RedactionEvent, RedactionStyle, ScanPreviewBox, ScanProgressEvent, ScanSettings, TestFrameOverlayBox } from '../types'
 
+// ── Undo/Redo ────────────────────────────────────────────────────────────────
+
+const MAX_UNDO = 50
+
+export type UndoActionType = 'status' | 'style' | 'keyframes' | 'add_event' | 'delete_event' | 'bulk_status' | 'bulk_style'
+
+export interface UndoAction {
+  type: UndoActionType
+  eventId?: string
+  eventIds?: string[]
+  before: any
+  after: any
+}
+
 /** Snapshot of scan pipeline progress, updated by the useScanProgress hook. */
 interface ScanProgress {
   /** True while the scan pipeline is actively running. */
@@ -170,6 +184,17 @@ interface ProjectStore {
   /** Reset scan progress to idle state (before or after a scan). */
   resetScanProgress: () => void
 
+  // ── Undo/Redo ──────────────────────────────────────────────────────────────
+
+  undoStack: UndoAction[]
+  redoStack: UndoAction[]
+  canUndo: boolean
+  canRedo: boolean
+  pushUndo: (action: UndoAction) => void
+  undo: () => UndoAction | null
+  redo: () => UndoAction | null
+  clearHistory: () => void
+
   // ── Notifications ──────────────────────────────────────────────────────────
 
   notifications: Notification[]
@@ -185,7 +210,7 @@ const DEFAULT_SCAN_PROGRESS: ScanProgress = {
   totalOcrFrames: 0,
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
+export const useProjectStore = create<ProjectStore>((set, get) => ({
   // ── Active project ──────────────────────────────────────────────────────────
 
   project: null,
@@ -202,12 +227,16 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     staticDrawMode: false,
     scanId: null,
     scanProgress: DEFAULT_SCAN_PROGRESS,
+    undoStack: [],
+    redoStack: [],
+    canUndo: false,
+    canRedo: false,
   }),
 
   // ── Events ──────────────────────────────────────────────────────────────────
 
   events: [],
-  setEvents: (events) => set({ events }),
+  setEvents: (events) => set({ events, undoStack: [], redoStack: [], canUndo: false, canRedo: false }),
 
   updateEventStatus: (eventId, status) =>
     set((state) => ({
@@ -346,6 +375,150 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     }),
 
   resetScanProgress: () => set({ scanProgress: DEFAULT_SCAN_PROGRESS }),
+
+  // ── Undo/Redo ──────────────────────────────────────────────────────────────
+
+  undoStack: [],
+  redoStack: [],
+  canUndo: false,
+  canRedo: false,
+
+  pushUndo: (action) =>
+    set((state) => {
+      const stack = [...state.undoStack, action]
+      if (stack.length > MAX_UNDO) stack.shift()
+      return { undoStack: stack, redoStack: [], canUndo: true, canRedo: false }
+    }),
+
+  undo: (): UndoAction | null => {
+    const state = get()
+    if (state.undoStack.length === 0) return null
+    const action = state.undoStack[state.undoStack.length - 1]
+    const newUndoStack = state.undoStack.slice(0, -1)
+    const newRedoStack = [...state.redoStack, action]
+
+    // Apply the `before` state
+    let eventsPatch: RedactionEvent[] = state.events
+    switch (action.type) {
+      case 'status':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, status: action.before.status } : e
+        )
+        break
+      case 'style':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, redaction_style: action.before.style } : e
+        )
+        break
+      case 'keyframes':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, keyframes: action.before.keyframes } : e
+        )
+        break
+      case 'add_event':
+        eventsPatch = state.events.filter((e: RedactionEvent) => e.event_id !== action.after.event.event_id)
+        break
+      case 'delete_event':
+        eventsPatch = [...state.events, action.before.event]
+        break
+      case 'bulk_status': {
+        const beforeMap = action.before as Map<string, string>
+        eventsPatch = state.events.map((e: RedactionEvent) => {
+          const prev = beforeMap.get(e.event_id)
+          return prev !== undefined ? { ...e, status: prev as RedactionEvent['status'] } : e
+        })
+        break
+      }
+      case 'bulk_style': {
+        const beforeMap = action.before as Map<string, RedactionStyle>
+        eventsPatch = state.events.map((e: RedactionEvent) => {
+          const prev = beforeMap.get(e.event_id)
+          return prev !== undefined ? { ...e, redaction_style: prev } : e
+        })
+        break
+      }
+    }
+
+    set({
+      events: eventsPatch,
+      undoStack: newUndoStack,
+      redoStack: newRedoStack,
+      canUndo: newUndoStack.length > 0,
+      canRedo: true,
+    })
+    return action
+  },
+
+  redo: (): UndoAction | null => {
+    const state = get()
+    if (state.redoStack.length === 0) return null
+    const action = state.redoStack[state.redoStack.length - 1]
+    const newRedoStack = state.redoStack.slice(0, -1)
+    const newUndoStack = [...state.undoStack, action]
+
+    // Apply the `after` state
+    let eventsPatch: RedactionEvent[] = state.events
+    switch (action.type) {
+      case 'status':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, status: action.after.status } : e
+        )
+        break
+      case 'style':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, redaction_style: action.after.style } : e
+        )
+        break
+      case 'keyframes':
+        eventsPatch = state.events.map((e: RedactionEvent) =>
+          e.event_id === action.eventId ? { ...e, keyframes: action.after.keyframes } : e
+        )
+        break
+      case 'add_event':
+        eventsPatch = [...state.events, action.after.event]
+        break
+      case 'delete_event':
+        eventsPatch = state.events.filter((e: RedactionEvent) => e.event_id !== action.before.event.event_id)
+        break
+      case 'bulk_status': {
+        const ids = action.eventIds
+        const newStatus = action.after.status
+        if (ids) {
+          const idSet = new Set(ids)
+          eventsPatch = state.events.map((e: RedactionEvent) =>
+            idSet.has(e.event_id) ? { ...e, status: newStatus } : e
+          )
+        } else {
+          eventsPatch = state.events.map((e: RedactionEvent) => ({ ...e, status: newStatus }))
+        }
+        break
+      }
+      case 'bulk_style': {
+        const ids = action.eventIds
+        const newStyle = action.after.style
+        if (ids) {
+          const idSet = new Set(ids)
+          eventsPatch = state.events.map((e: RedactionEvent) =>
+            idSet.has(e.event_id) ? { ...e, redaction_style: newStyle } : e
+          )
+        } else {
+          eventsPatch = state.events.map((e: RedactionEvent) => ({ ...e, redaction_style: newStyle }))
+        }
+        break
+      }
+    }
+
+    set({
+      events: eventsPatch,
+      undoStack: newUndoStack,
+      redoStack: newRedoStack,
+      canUndo: true,
+      canRedo: newRedoStack.length > 0,
+    })
+    return action
+  },
+
+  clearHistory: () => set({ undoStack: [], redoStack: [], canUndo: false, canRedo: false }),
 
   // ── Notifications ──────────────────────────────────────────────────────────
 

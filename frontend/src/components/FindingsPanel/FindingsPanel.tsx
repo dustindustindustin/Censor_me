@@ -31,6 +31,7 @@ export function FindingsPanel({ style }: Props) {
     updateEventStatus: updateLocal,
     bulkUpdateEventStatus: bulkUpdateLocal,
     scanProgress,
+    pushUndo,
   } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
@@ -39,6 +40,7 @@ export function FindingsPanel({ style }: Props) {
     updateEventStatus: s.updateEventStatus,
     bulkUpdateEventStatus: s.bulkUpdateEventStatus,
     scanProgress: s.scanProgress,
+    pushUndo: s.pushUndo,
   }))
 
   // Filter and sort state — local to this component (not persisted to project)
@@ -61,14 +63,18 @@ export function FindingsPanel({ style }: Props) {
 
   const handleStatus = useCallback(async (e: RedactionEvent, status: EventStatus) => {
     if (!project) return
+    pushUndo({ type: 'status', eventId: e.event_id, before: { status: e.status }, after: { status } })
     updateLocal(e.event_id, status)
     await updateEventStatus(project.project_id, e.event_id, status)
-  }, [project, updateLocal])
+  }, [project, updateLocal, pushUndo])
 
   const handleAcceptAll = async () => {
     if (!project) return
-    const pendingIds = filtered.filter((e) => e.status === 'pending').map((e) => e.event_id)
-    if (pendingIds.length === 0) return
+    const pendingEvents = filtered.filter((e) => e.status === 'pending')
+    if (pendingEvents.length === 0) return
+    const pendingIds = pendingEvents.map((e) => e.event_id)
+    const beforeMap = new Map(pendingEvents.map((e) => [e.event_id, e.status]))
+    pushUndo({ type: 'bulk_status', eventIds: pendingIds, before: beforeMap, after: { status: 'accepted' } })
     bulkUpdateLocal('accepted', pendingIds)
     await bulkUpdateEventStatus(project.project_id, 'accepted', pendingIds)
   }
@@ -77,6 +83,8 @@ export function FindingsPanel({ style }: Props) {
     if (!project || filtered.length === 0) return
     if (!window.confirm(`Reject all ${filtered.length} visible finding(s)?`)) return
     const ids = filtered.map((e) => e.event_id)
+    const beforeMap = new Map(filtered.map((e) => [e.event_id, e.status]))
+    pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status: 'rejected' } })
     bulkUpdateLocal('rejected', ids)
     await bulkUpdateEventStatus(project.project_id, 'rejected', ids)
   }

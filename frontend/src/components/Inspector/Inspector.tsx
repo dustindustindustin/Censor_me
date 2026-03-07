@@ -5,8 +5,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Check, CircleDot, X } from 'lucide-react'
-import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, startExport, startScan, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
+import { Check, CircleDot, Redo2, Undo2, X } from 'lucide-react'
+import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, reportDownloadUrl, startExport, startScan, updateEventKeyframes, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
+import type { UndoAction } from '../../store/projectStore'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
 import type { RedactionStyle, RedactionStyleType } from '../../types'
@@ -29,7 +30,7 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
 }
 
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification, pushUndo, canUndo, canRedo, undo, redo } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
@@ -41,6 +42,11 @@ export function Inspector({ style }: Props) {
     setScanId: s.setScanId,
     updateProjectSettingsLocal: s.updateProjectSettings,
     addNotification: s.addNotification,
+    pushUndo: s.pushUndo,
+    canUndo: s.canUndo,
+    canRedo: s.canRedo,
+    undo: s.undo,
+    redo: s.redo,
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
@@ -215,6 +221,7 @@ export function Inspector({ style }: Props) {
 
   const handleStatusChange = async (status: 'accepted' | 'rejected') => {
     if (!project || !event) return
+    pushUndo({ type: 'status', eventId: event.event_id, before: { status: event.status }, after: { status } })
     updateLocal(event.event_id, status)
     await updateEventStatus(project.project_id, event.event_id, status)
   }
@@ -233,15 +240,21 @@ export function Inspector({ style }: Props) {
 
   const handleStyleType = (type: RedactionStyleType) => {
     if (!event) return
+    pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...event.redaction_style } }, after: { style: { ...event.redaction_style, type } } })
     applyStyle({ ...event.redaction_style, type })
   }
 
   const handleStrength = (value: number) => {
     if (!project || !event) return
+    // Record undo with the style as it was before any drag adjustments in this batch
+    const currentEvents = useProjectStore.getState().events
+    const currentEvent = currentEvents.find((e) => e.event_id === event.event_id)
+    const oldStyle = currentEvent?.redaction_style ?? event.redaction_style
     const newStyle = { ...event.redaction_style, strength: value }
     updateEvent({ ...event, redaction_style: newStyle })
     if (strengthTimer.current) clearTimeout(strengthTimer.current)
     strengthTimer.current = setTimeout(() => {
+      pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...oldStyle } }, after: { style: newStyle } })
       updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
     }, 400)
   }
@@ -252,8 +265,50 @@ export function Inspector({ style }: Props) {
     updateEvent({ ...event, redaction_style: newStyle })
     if (colorTimer.current) clearTimeout(colorTimer.current)
     colorTimer.current = setTimeout(() => {
+      pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...event.redaction_style } }, after: { style: newStyle } })
       updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
     }, 400)
+  }
+
+  const persistUndoRedo = async (pid: string, action: UndoAction, snapshot: 'before' | 'after') => {
+    const data = snapshot === 'before' ? action.before : action.after
+    switch (action.type) {
+      case 'status':
+        if (action.eventId) await updateEventStatus(pid, action.eventId, data.status)
+        break
+      case 'style':
+        if (action.eventId) await updateEventStyle(pid, action.eventId, data.style)
+        break
+      case 'keyframes':
+        if (action.eventId) await updateEventKeyframes(pid, action.eventId, data.keyframes)
+        break
+      case 'bulk_status':
+        if (snapshot === 'before') {
+          const statusGroups = new Map<string, string[]>()
+          const beforeMap = data as Map<string, string>
+          for (const [eid, status] of beforeMap) {
+            const list = statusGroups.get(status) ?? []
+            list.push(eid)
+            statusGroups.set(status, list)
+          }
+          for (const [status, ids] of statusGroups) {
+            await bulkUpdateEventStatus(pid, status as any, ids)
+          }
+        } else {
+          await bulkUpdateEventStatus(pid, data.status, action.eventIds)
+        }
+        break
+      case 'bulk_style':
+        if (snapshot === 'before') {
+          const beforeMap = data as Map<string, import('../../types').RedactionStyle>
+          for (const [eid, style] of beforeMap) {
+            await updateEventStyle(pid, eid, style)
+          }
+        } else {
+          await bulkUpdateEventStyle(pid, data.style, action.eventIds)
+        }
+        break
+    }
   }
 
   return (
@@ -281,13 +336,23 @@ export function Inspector({ style }: Props) {
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--accept)', marginBottom: 'var(--space-2)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}>
               <span className="checkmark-animate"><Check size={16} /></span> Export complete
             </div>
-            <a
-              href={project ? exportDownloadUrl(project.project_id) : '#'}
-              download
-              style={{ display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
-            >
-              Download Video
-            </a>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <a
+                href={project ? exportDownloadUrl(project.project_id) : '#'}
+                download
+                style={{ flex: 1, display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
+              >
+                Download Video
+              </a>
+              <a
+                href={project ? reportDownloadUrl(project.project_id, 'html') : '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ flex: 1, display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--glass-bg)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
+              >
+                Download Report
+              </a>
+            </div>
             <button className="secondary" onClick={resetExport} style={{ width: '100%', marginTop: 'var(--space-2)' }}>Export again</button>
           </div>
         ) : exportProg.error ? (
@@ -440,8 +505,34 @@ export function Inspector({ style }: Props) {
         </div>
       )}
 
-      {/* Keyboard shortcuts */}
+      {/* Undo/Redo bar + Keyboard shortcuts */}
       <div style={{ padding: 'var(--space-3) var(--space-4)', borderTop: '1px solid var(--border-hairline)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+          <button
+            className="ghost"
+            disabled={!canUndo}
+            onClick={() => {
+              const action = undo()
+              if (action && project) persistUndoRedo(project.project_id, action, 'before').catch(console.error)
+            }}
+            title="Undo (Ctrl+Z)"
+            style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)', minHeight: 28, padding: 'var(--space-1)' }}
+          >
+            <Undo2 size={14} /> Undo
+          </button>
+          <button
+            className="ghost"
+            disabled={!canRedo}
+            onClick={() => {
+              const action = redo()
+              if (action && project) persistUndoRedo(project.project_id, action, 'after').catch(console.error)
+            }}
+            title="Redo (Ctrl+Y)"
+            style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)', minHeight: 28, padding: 'var(--space-1)' }}
+          >
+            <Redo2 size={14} /> Redo
+          </button>
+        </div>
         <div style={{ fontWeight: 500, marginBottom: 'var(--space-1)' }}>Shortcuts</div>
         {[
           ['Space', 'Play / Pause'],
@@ -449,6 +540,8 @@ export function Inspector({ style }: Props) {
           ['K', 'Pause'],
           ['A', 'Accept selected'],
           ['R', 'Reject selected'],
+          ['Ctrl+Z', 'Undo'],
+          ['Ctrl+Y', 'Redo'],
         ].map(([key, desc]) => (
           <div key={key} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 'var(--space-1)' }}>
             <kbd>{key}</kbd>
