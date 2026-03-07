@@ -127,6 +127,8 @@ export function OverlayCanvas({
     scanPreviewFrame,
     drawingMode,
     setDrawingMode,
+    polygonDrawMode,
+    setPolygonDrawMode,
     staticDrawMode,
     livePreviewMode,
     addNotification,
@@ -143,6 +145,8 @@ export function OverlayCanvas({
     drawingMode: s.drawingMode,
     setDrawingMode: s.setDrawingMode,
     staticDrawMode: s.staticDrawMode,
+    polygonDrawMode: s.polygonDrawMode,
+    setPolygonDrawMode: s.setPolygonDrawMode,
     livePreviewMode: s.livePreviewMode,
     addNotification: s.addNotification,
     pushUndo: s.pushUndo,
@@ -151,6 +155,9 @@ export function OverlayCanvas({
   // Mouse interaction state (refs to avoid triggering re-renders on every frame)
   const drawStart = useRef<{ nx: number; ny: number } | null>(null)
   const drawCurrent = useRef<{ nx: number; ny: number } | null>(null)
+  // Polygon drawing state: accumulated vertices in source-pixel coords
+  const polygonPoints = useRef<{ nx: number; ny: number }[]>([])
+  const polygonCurrent = useRef<{ nx: number; ny: number } | null>(null)
   const resizeState = useRef<{
     handle: HandleId
     event: RedactionEvent
@@ -215,8 +222,8 @@ export function OverlayCanvas({
   // ── Draw loop (requestAnimationFrame-based) ─────────────────────────────────
 
   // Store latest props in refs so the rAF callback always sees current values
-  const propsRef = useRef({ currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, isPaused, livePreviewMode })
-  propsRef.current = { currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, isPaused, livePreviewMode }
+  const propsRef = useRef({ currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, polygonDrawMode, isPaused, livePreviewMode })
+  propsRef.current = { currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, polygonDrawMode, isPaused, livePreviewMode }
 
   useEffect(() => {
     let cancelled = false
@@ -238,7 +245,7 @@ export function OverlayCanvas({
         return
       }
 
-      const { currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, isPaused, livePreviewMode } = propsRef.current
+      const { currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, polygonDrawMode, isPaused, livePreviewMode } = propsRef.current
 
       const s = getScales()
       const containerRect = container.getBoundingClientRect()
@@ -408,6 +415,58 @@ export function OverlayCanvas({
             ctx.fillRect(rx, ry, rw, rh)
           }
         }
+
+        // ── Live polygon draw ──
+        if (polygonDrawMode && polygonPoints.current.length > 0) {
+          ctx.beginPath()
+          const pts = polygonPoints.current
+          const first = srcBboxToScreen({ x: pts[0].nx, y: pts[0].ny, w: 0, h: 0 }, s)
+          ctx.moveTo(first.rx, first.ry)
+          for (let pi = 1; pi < pts.length; pi++) {
+            const pt = srcBboxToScreen({ x: pts[pi].nx, y: pts[pi].ny, w: 0, h: 0 }, s)
+            ctx.lineTo(pt.rx, pt.ry)
+          }
+          // Draw line to current mouse position
+          if (polygonCurrent.current) {
+            const cur = srcBboxToScreen({ x: polygonCurrent.current.nx, y: polygonCurrent.current.ny, w: 0, h: 0 }, s)
+            ctx.lineTo(cur.rx, cur.ry)
+          }
+          ctx.strokeStyle = '#ff9900'
+          ctx.lineWidth = 2
+          ctx.setLineDash([6, 3])
+          ctx.stroke()
+          ctx.setLineDash([])
+
+          // Fill the polygon area with a semi-transparent overlay
+          if (pts.length >= 3) {
+            ctx.beginPath()
+            ctx.moveTo(first.rx, first.ry)
+            for (let pi = 1; pi < pts.length; pi++) {
+              const pt = srcBboxToScreen({ x: pts[pi].nx, y: pts[pi].ny, w: 0, h: 0 }, s)
+              ctx.lineTo(pt.rx, pt.ry)
+            }
+            ctx.closePath()
+            ctx.fillStyle = 'rgba(255,153,0,0.1)'
+            ctx.fill()
+          }
+
+          // Draw vertex dots
+          for (const pt of pts) {
+            const sp = srcBboxToScreen({ x: pt.nx, y: pt.ny, w: 0, h: 0 }, s)
+            ctx.fillStyle = '#ff9900'
+            ctx.beginPath()
+            ctx.arc(sp.rx, sp.ry, 4, 0, Math.PI * 2)
+            ctx.fill()
+          }
+
+          // Hint text
+          ctx.font = `11px ${theme.fontFamily}`
+          ctx.fillStyle = '#ff9900'
+          ctx.fillText(
+            pts.length < 3 ? 'Click to add points' : 'Click to add, double-click to finish',
+            first.rx, first.ry - 8
+          )
+        }
       }
 
       rafIdRef.current = requestAnimationFrame(draw)
@@ -472,7 +531,14 @@ export function OverlayCanvas({
       }
     }
 
-    // Priority 3: draw mode
+    // Priority 3: polygon draw mode (click to add vertex)
+    if (polygonDrawMode) {
+      const { nx, ny } = screenToSrc(mx, my, s)
+      polygonPoints.current = [...polygonPoints.current, { nx, ny }]
+      return
+    }
+
+    // Priority 4: draw mode (rectangle)
     if (drawingMode) {
       const { nx, ny } = screenToSrc(mx, my, s)
       drawStart.current = { nx, ny }
@@ -543,8 +609,15 @@ export function OverlayCanvas({
       return
     }
 
+    // Polygon mode: track mouse for preview line to next vertex
+    if (polygonDrawMode && polygonPoints.current.length > 0) {
+      const { nx, ny } = screenToSrc(mx, my, s)
+      polygonCurrent.current = { nx, ny }
+      return
+    }
+
     // Update cursor based on what is under the mouse (no drag in progress)
-    if (drawingMode) {
+    if (drawingMode || polygonDrawMode) {
       setCursorStyle('crosshair')
       return
     }
@@ -696,7 +769,71 @@ export function OverlayCanvas({
     }
   }
 
-  const needsPointerEvents = drawingMode || selectedEventId !== null || events.some((ev) => {
+  const handleDoubleClick = async () => {
+    if (!polygonDrawMode || polygonPoints.current.length < 3) return
+    const s = getScales()
+    if (!s) return
+
+    const pts = polygonPoints.current
+    // Compute bounding box of the polygon
+    const xs = pts.map(p => p.nx)
+    const ys = pts.map(p => p.ny)
+    const minX = Math.round(Math.min(...xs))
+    const minY = Math.round(Math.min(...ys))
+    const maxX = Math.round(Math.max(...xs))
+    const maxY = Math.round(Math.max(...ys))
+    const w = maxX - minX
+    const h = maxY - minY
+
+    if (w < 10 || h < 10) {
+      polygonPoints.current = []
+      polygonCurrent.current = null
+      return
+    }
+
+    const polygon = pts.map(p => [Math.round(p.nx), Math.round(p.ny)])
+
+    const newEvent: RedactionEvent = {
+      event_id: crypto.randomUUID(),
+      source: 'manual',
+      pii_type: 'manual',
+      confidence: 1.0,
+      extracted_text: null,
+      time_ranges: [{ start_ms: currentTimeMs, end_ms: currentTimeMs }],
+      keyframes: [{
+        time_ms: currentTimeMs,
+        bbox: { x: minX, y: minY, w, h },
+        polygon,
+      }],
+      tracking_method: 'none',
+      redaction_style: project?.scan_settings?.default_redaction_style ?? { type: 'blur', strength: 15, color: '#000000' },
+      status: 'accepted',
+    }
+
+    polygonPoints.current = []
+    polygonCurrent.current = null
+
+    try {
+      const saved = await addEventToProject(projectId, newEvent)
+      pushUndo({ type: 'add_event', before: null, after: { event: saved } })
+      addEvent(saved)
+      setPolygonDrawMode(false)
+
+      try {
+        const tracked = await trackManualEvent(projectId, saved.event_id, {
+          static: staticDrawMode,
+        })
+        updateEvent(tracked)
+      } catch (err) {
+        console.warn('Tracking failed for polygon box (single-frame redaction kept):', err)
+      }
+    } catch (err) {
+      console.error('Failed to save polygon region:', err)
+      addNotification('Failed to save polygon region', 'error')
+    }
+  }
+
+  const needsPointerEvents = drawingMode || polygonDrawMode || selectedEventId !== null || events.some((ev) => {
     if (ev.status === 'rejected') return false
     return ev.time_ranges.some(r => currentTimeMs >= r.start_ms && currentTimeMs <= r.end_ms)
   })
@@ -707,11 +844,12 @@ export function OverlayCanvas({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
+      onDoubleClick={handleDoubleClick}
       style={{
         position: 'absolute',
         pointerEvents: needsPointerEvents ? 'auto' : 'none',
         zIndex: 5,
-        cursor: drawingMode ? 'crosshair' : cursorStyle,
+        cursor: (drawingMode || polygonDrawMode) ? 'crosshair' : cursorStyle,
       }}
     />
   )

@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.api import export, projects, rules, scan, system, video
+from backend.api import batch, export, presets, projects, rules, scan, system, video
 from backend.utils.gpu_detect import detect_gpu
 from backend.utils.startup import initialize_models
 
@@ -67,3 +67,5 @@ app.include_router(video.router, prefix="/video", tags=["video"])
 app.include_router(scan.router, prefix="/scan", tags=["scan"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(rules.router, prefix="/rules", tags=["rules"])
+app.include_router(presets.router, prefix="/presets", tags=["presets"])
+app.include_router(batch.router, prefix="/batch", tags=["batch"])

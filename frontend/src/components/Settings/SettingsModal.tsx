@@ -12,7 +12,9 @@ import { X } from 'lucide-react'
 import {
   addCustomRule,
   deleteCustomRule,
+  getPresets,
   getRules,
+  getSystemDiagnostics,
   testRule,
   updateCustomRule,
   updateProjectSettings,
@@ -30,7 +32,7 @@ interface Props {
   onClose: () => void
 }
 
-type Tab = 'scan' | 'export' | 'rules'
+type Tab = 'scan' | 'export' | 'rules' | 'gpu'
 
 const PII_LABEL_OPTIONS: PiiType[] = [
   'phone', 'email', 'person', 'address', 'credit_card', 'ssn',
@@ -86,6 +88,11 @@ export function SettingsModal({
   const [rulesError, setRulesError] = useState<string | null>(null)
   const rulesLoadedRef = useRef(false)
 
+  // GPU diagnostics state
+  const [gpuDiag, setGpuDiag] = useState<any>(null)
+  const [gpuLoading, setGpuLoading] = useState(false)
+  const gpuLoadedRef = useRef(false)
+
   // Add-rule form state
   const [showAddForm, setShowAddForm] = useState(false)
   const [newName, setNewName] = useState('')
@@ -108,6 +115,17 @@ export function SettingsModal({
       .then(setRules)
       .catch(() => setRulesError('Failed to load rules.'))
       .finally(() => setRulesLoading(false))
+  }, [activeTab])
+
+  // Lazy-load GPU diagnostics on first GPU tab visit
+  useEffect(() => {
+    if (activeTab !== 'gpu' || gpuLoadedRef.current) return
+    gpuLoadedRef.current = true
+    setGpuLoading(true)
+    getSystemDiagnostics()
+      .then(setGpuDiag)
+      .catch(() => {})
+      .finally(() => setGpuLoading(false))
   }, [activeTab])
 
   // Close on Escape
@@ -249,14 +267,14 @@ export function SettingsModal({
 
         {/* Tab bar */}
         <div className="tab-bar">
-          {(['scan', 'export', 'rules'] as Tab[]).map((tab) => (
+          {(['scan', 'export', 'rules', 'gpu'] as Tab[]).map((tab) => (
             <button
               key={tab}
               className="tab-button"
               data-active={activeTab === tab}
               onClick={() => setActiveTab(tab)}
             >
-              {tab}
+              {tab === 'gpu' ? 'GPU / Performance' : tab}
             </button>
           ))}
         </div>
@@ -268,6 +286,9 @@ export function SettingsModal({
           )}
           {activeTab === 'export' && (
             <ExportTab output={output} onChange={setOutput} gpuAvailable={gpuAvailable} />
+          )}
+          {activeTab === 'gpu' && (
+            <GpuTab data={gpuDiag} loading={gpuLoading} />
           )}
           {activeTab === 'rules' && (
             <RulesTab
@@ -295,7 +316,7 @@ export function SettingsModal({
         </div>
 
         {/* Footer (Scan + Export only) */}
-        {activeTab !== 'rules' && (
+        {activeTab !== 'rules' && activeTab !== 'gpu' && (
           <div style={{
             padding: 'var(--space-3) var(--space-6)',
             borderTop: '1px solid var(--border-hairline)',
@@ -329,8 +350,53 @@ export function SettingsModal({
 // ── Scan Tab ──────────────────────────────────────────────────────────────────
 
 function ScanTab({ scan, onChange }: { scan: ScanSettings; onChange: (s: ScanSettings) => void }) {
+  const [presets, setPresets] = useState<any[]>([])
+  const presetsLoadedRef = useRef(false)
+
+  useEffect(() => {
+    if (presetsLoadedRef.current) return
+    presetsLoadedRef.current = true
+    getPresets().then(setPresets).catch(() => {})
+  }, [])
+
+  const handlePresetChange = (presetId: string) => {
+    if (!presetId) return
+    const preset = presets.find((p: any) => p.preset_id === presetId)
+    if (!preset?.scan_settings) return
+    const s = preset.scan_settings
+    onChange({
+      ...scan,
+      preset: presetId,
+      ...(s.ocr_sample_interval != null && { ocr_sample_interval: s.ocr_sample_interval }),
+      ...(s.ocr_resolution_scale != null && { ocr_resolution_scale: s.ocr_resolution_scale }),
+      ...(s.confidence_threshold != null && { confidence_threshold: s.confidence_threshold }),
+      ...(s.detect_faces != null && { detect_faces: s.detect_faces }),
+      ...(s.secure_mode != null && { secure_mode: s.secure_mode }),
+      ...(s.entity_confidence_overrides != null && { entity_confidence_overrides: s.entity_confidence_overrides }),
+    })
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      <Field label="Preset" hint="Load a preset to quickly configure scan settings for common scenarios.">
+        <select
+          value={scan.preset || ''}
+          onChange={(e) => handlePresetChange(e.target.value)}
+        >
+          <option value="">Custom</option>
+          {presets.map((p: any) => (
+            <option key={p.preset_id} value={p.preset_id}>
+              {p.name}{p.is_custom ? ' (custom)' : ''}
+            </option>
+          ))}
+        </select>
+        {scan.preset && presets.find((p: any) => p.preset_id === scan.preset)?.description && (
+          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
+            {presets.find((p: any) => p.preset_id === scan.preset)?.description}
+          </div>
+        )}
+      </Field>
+
       <Field label="Confidence threshold" hint="Minimum Presidio score to include a detection. Lower = more findings, higher = fewer false positives.">
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
           <input
@@ -877,6 +943,112 @@ function PerTypeOverrides({
           })}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── GPU Tab ───────────────────────────────────────────────────────────────────
+
+function GpuTab({ data, loading }: { data: any; loading: boolean }) {
+  if (loading) {
+    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>Loading diagnostics&hellip;</div>
+  }
+  if (!data) {
+    return <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>Failed to load diagnostics.</div>
+  }
+
+  const gpu = data.gpu
+  const vram = data.vram
+  const pytorch = data.pytorch
+  const ffmpeg = data.ffmpeg
+  const system = data.system
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      {/* GPU */}
+      <section>
+        <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)', marginBottom: 'var(--space-2)' }}>GPU</div>
+        <InfoRow label="Device" value={gpu?.display_name ?? 'None detected'} />
+        <InfoRow label="Vendor" value={gpu?.vendor ?? 'none'} />
+        <StatusRow label="CUDA" available={gpu?.cuda_available} version={gpu?.cuda_version} />
+        <StatusRow label="MPS (Metal)" available={gpu?.mps_available} />
+        <StatusRow label="ROCm" available={gpu?.rocm_available} />
+        <StatusRow label="DirectML" available={gpu?.directml_available} />
+        <InfoRow label="HW Encoder" value={gpu?.hw_encoder ?? 'None (CPU encoding)'} />
+      </section>
+
+      {/* VRAM */}
+      {vram && (
+        <section>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)', marginBottom: 'var(--space-2)' }}>VRAM</div>
+          <InfoRow label="Total" value={`${vram.total_mb} MB`} />
+          <InfoRow label="Allocated" value={`${vram.allocated_mb} MB`} />
+          <InfoRow label="Free" value={`${vram.free_mb} MB`} />
+          <div style={{ marginTop: 'var(--space-2)' }}>
+            <div className="progress-track" style={{ height: 8 }}>
+              <div className="progress-fill" style={{ width: `${vram.total_mb > 0 ? Math.round((vram.allocated_mb / vram.total_mb) * 100) : 0}%` }} />
+            </div>
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
+              {vram.total_mb > 0 ? Math.round((vram.allocated_mb / vram.total_mb) * 100) : 0}% used
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* PyTorch */}
+      {pytorch && (
+        <section>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)', marginBottom: 'var(--space-2)' }}>PyTorch</div>
+          <InfoRow label="Version" value={pytorch.version} />
+          {pytorch.cuda_version && <InfoRow label="CUDA Toolkit" value={pytorch.cuda_version} />}
+          {pytorch.cudnn_version && <InfoRow label="cuDNN" value={pytorch.cudnn_version} />}
+          {pytorch.hip_version && <InfoRow label="HIP (ROCm)" value={pytorch.hip_version} />}
+        </section>
+      )}
+
+      {/* FFmpeg */}
+      {ffmpeg && (
+        <section>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)', marginBottom: 'var(--space-2)' }}>FFmpeg</div>
+          {ffmpeg.version && <InfoRow label="Version" value={ffmpeg.version} />}
+          <StatusRow label="h264_nvenc" available={ffmpeg.h264_nvenc} />
+          <StatusRow label="h264_amf" available={ffmpeg.h264_amf} />
+          <StatusRow label="h264_videotoolbox" available={ffmpeg.h264_videotoolbox} />
+          <StatusRow label="libx264" available={ffmpeg.libx264} />
+        </section>
+      )}
+
+      {/* System */}
+      {system && (
+        <section>
+          <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)', marginBottom: 'var(--space-2)' }}>System</div>
+          <InfoRow label="OS" value={system.os} />
+          <InfoRow label="Python" value={system.python} />
+          {system.cpu && <InfoRow label="CPU" value={system.cpu} />}
+          {system.ram_gb && <InfoRow label="RAM" value={`${system.ram_gb} GB`} />}
+        </section>
+      )}
+    </div>
+  )
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', padding: 'var(--space-1) 0', fontSize: 'var(--font-size-small)' }}>
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span>{value}</span>
+    </div>
+  )
+}
+
+function StatusRow({ label, available, version }: { label: string; available?: boolean; version?: string | null }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-1) 0', fontSize: 'var(--font-size-small)' }}>
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: available ? 'var(--accept)' : 'var(--reject)', display: 'inline-block' }} />
+        <span>{available ? (version ? `Available (${version})` : 'Available') : 'Not available'}</span>
+      </span>
     </div>
   )
 }

@@ -1,0 +1,21 @@
+{
+  "preset_id": "quick_review",
+  "name": "Quick Review",
+  "description": "Fast scan for quick previews. Sparser sampling and higher thresholds to minimize false positives. Good for initial triage before a thorough scan.",
+  "category": "general",
+  "scan_settings": {
+    "ocr_sample_interval": 10,
+    "ocr_resolution_scale": 1.0,
+    "confidence_threshold": 0.50,
+    "entity_confidence_overrides": {
+      "phone": 0.50,
+      "email": 0.50,
+      "person": 0.65,
+      "ssn": 0.40,
+      "credit_card": 0.40,
+      "account_id": 0.50,
+      "face": 0.50
+    },
+    "detect_faces": true
+  }
+}

@@ -109,6 +109,7 @@ class PiiClassifier:
         self._entity_overrides = entity_confidence_overrides or {}
         # Populated via set_custom_rules(); empty until rules are loaded.
         self._custom_rules: list[dict] = []
+        self._context_rules: list[dict] = []
         self._warned_rules: set[str] = set()
 
     def _get_analyzer(self):
@@ -134,13 +135,19 @@ class PiiClassifier:
 
     def set_custom_rules(self, rules: list[dict]) -> None:
         """
-        Load user-defined regex rules to apply in addition to Presidio.
+        Load user-defined rules to apply in addition to Presidio.
 
         Args:
-            rules: List of rule dicts from the ``/rules`` API. Only rules with
-                   ``type='regex'`` and ``enabled=True`` are used.
+            rules: List of rule dicts from the ``/rules`` API. Regex rules
+                   (``type='regex'``) and context/field-label rules
+                   (``type='context'`` or ``type='field_label'``) are kept
+                   separately. Only enabled rules are stored.
         """
         self._custom_rules = [r for r in rules if r.get("type") == "regex" and r.get("enabled", True)]
+        self._context_rules = [
+            r for r in rules
+            if r.get("type") in ("context", "field_label") and r.get("enabled", True)
+        ]
 
     def classify(
         self,
@@ -291,6 +298,103 @@ class PiiClassifier:
                         source_frame=frame_index,
                         source_time_ms=time_ms,
                     ))
+
+        # --- Context / field-label rules (spatial adjacency) ---
+        #
+        # For each context rule, find OCR boxes whose text matches the label
+        # pattern (e.g. "Phone:", "Email:"). Then flag adjacent boxes (to the
+        # right or below) as PII — the adjacent text is the *value*, not the
+        # label itself.
+        #
+        # To avoid duplicates, we track which bboxes have already been flagged
+        # by Presidio or regex rules above.
+        existing_bboxes: set[tuple[int, int, int, int]] = {c.bbox for c in candidates}
+
+        for rule in self._context_rules:
+            pattern = rule.get("pattern", "")
+            label = rule.get("label", "custom")
+            rule_confidence = float(rule.get("confidence", 0.8))
+            context_px = int(rule.get("context_pixels") or 200)
+
+            # Map the rule's label string to our PiiType enum
+            try:
+                pii_type = PiiType(label) if label in PiiType._value2member_map_ else PiiType.CUSTOM
+            except (ValueError, AttributeError):
+                pii_type = PiiType.CUSTOM
+
+            # Per-type threshold for context rules
+            threshold = self._entity_overrides.get(pii_type.value, self._threshold)
+            if rule_confidence < threshold:
+                continue
+
+            rule_id = rule.get("rule_id", pattern)
+            if len(pattern) > 500:
+                if rule_id not in self._warned_rules:
+                    self._warned_rules.add(rule_id)
+                    logger.warning("Skipping context rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)
+                continue
+
+            # Pass 1: identify label boxes that match the rule's pattern
+            label_boxes: list[BoxResult] = []
+            for box in ocr_results:
+                try:
+                    if re.search(pattern, box.text, re.IGNORECASE):
+                        label_boxes.append(box)
+                except re.error as exc:
+                    if rule_id not in self._warned_rules:
+                        self._warned_rules.add(rule_id)
+                        logger.warning("Skipping context rule %r: malformed regex: %s", rule_id, exc)
+                    break  # don't retry this rule on other boxes
+            else:
+                # Pass 2: for each label box, find adjacent value boxes
+                for label_box in label_boxes:
+                    lx, ly, lw, lh = label_box.bbox
+
+                    for value_box in ocr_results:
+                        if value_box is label_box:
+                            continue
+
+                        vx, vy, vw, vh = value_box.bbox
+
+                        # Skip if this bbox was already flagged by an earlier rule
+                        if value_box.bbox in existing_bboxes:
+                            continue
+
+                        # Check RIGHT adjacency:
+                        #   value box starts at or after label's right edge,
+                        #   within context_px, and has vertical overlap.
+                        right_adj = (
+                            vx >= lx + lw
+                            and vx <= lx + lw + context_px
+                            and vy < ly + lh  # vertical overlap
+                            and vy + vh > ly
+                        )
+
+                        # Check BELOW adjacency:
+                        #   value box starts at or after label's bottom edge,
+                        #   within context_px, and has horizontal overlap.
+                        below_adj = (
+                            vy >= ly + lh
+                            and vy <= ly + lh + context_px
+                            and vx < lx + lw  # horizontal overlap
+                            and vx + vw > lx
+                        )
+
+                        if right_adj or below_adj:
+                            direction = "right" if right_adj else "below"
+                            logger.debug(
+                                "Context rule %r: label %r → value %r (%s) on frame %d",
+                                rule_id, label_box.text, value_box.text, direction, frame_index,
+                            )
+                            candidates.append(PiiCandidate(
+                                text=value_box.text.strip(),
+                                pii_type=pii_type,
+                                confidence=rule_confidence,
+                                bbox=value_box.bbox,
+                                source_frame=frame_index,
+                                source_time_ms=time_ms,
+                            ))
+                            existing_bboxes.add(value_box.bbox)
 
         return candidates
 

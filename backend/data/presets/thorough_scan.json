@@ -1,0 +1,21 @@
+{
+  "preset_id": "thorough_scan",
+  "name": "Thorough Scan",
+  "description": "Maximum coverage at the cost of speed. Every 2nd frame analyzed at 1.5x resolution with low thresholds. Use for compliance-critical recordings.",
+  "category": "general",
+  "scan_settings": {
+    "ocr_sample_interval": 2,
+    "ocr_resolution_scale": 1.5,
+    "confidence_threshold": 0.25,
+    "entity_confidence_overrides": {
+      "phone": 0.25,
+      "email": 0.25,
+      "person": 0.35,
+      "ssn": 0.20,
+      "credit_card": 0.20,
+      "account_id": 0.25,
+      "face": 0.30
+    },
+    "detect_faces": true
+  }
+}

@@ -65,6 +65,8 @@ export interface BoundingBox {
 export interface Keyframe {
   time_ms: number  // Timestamp in milliseconds from the start of the video
   bbox: BoundingBox
+  /** Optional polygon vertices [[x1,y1],[x2,y2],...] in source video pixels. */
+  polygon?: number[][] | null
 }
 
 /** A contiguous time interval during which a redaction is active. */
@@ -291,3 +293,27 @@ export type ScanProgressEvent =
   | { stage: 'track'; frames_done: number; total_frames: number; active_trackers: number; progress_pct: number; time_ms: number }
   | { stage: 'done'; total_findings: number }
   | { stage: 'error'; message: string }
+
+// ── Batch mode ───────────────────────────────────────────────────────────────
+
+export type BatchItemStatus = 'queued' | 'importing' | 'scanning' | 'exporting' | 'done' | 'error' | 'skipped'
+
+export interface BatchItem {
+  filename: string
+  video_path: string
+  project_id: string | null
+  status: BatchItemStatus
+  error: string | null
+  events_found: number
+  scan_pct: number
+  export_pct: number
+}
+
+export interface BatchJob {
+  batch_id: string
+  status: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+  total: number
+  current_index: number
+  items: BatchItem[]
+  created_at: number
+}

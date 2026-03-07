@@ -110,15 +110,26 @@ class BoundingBox(BaseModel):
 
 class Keyframe(BaseModel):
     """
-    A single bounding box at a specific point in time.
+    A single bounding box (or polygon) at a specific point in time.
 
     The TrackerService fills in keyframes between OCR sample points. The
     RedactionRenderer interpolates linearly between adjacent keyframes to
     produce a smooth-moving redaction region in the exported video.
+
+    For polygon regions, ``polygon`` contains the list of [x, y] vertex
+    coordinates. When ``polygon`` is set, ``bbox`` serves as the axis-aligned
+    bounding rect of the polygon (used for spatial lookups and tracking).
     """
 
     time_ms: int = Field(description="Timestamp in milliseconds from the start of the video.")
     bbox: BoundingBox
+    polygon: list[list[int]] | None = Field(
+        default=None,
+        description=(
+            "Optional polygon vertices as [[x1,y1],[x2,y2],...] in source video pixels. "
+            "When set, the redaction region is the polygon shape instead of the bbox rectangle."
+        )
+    )
 
 
 class TimeRange(BaseModel):

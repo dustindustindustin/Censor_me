@@ -486,15 +486,15 @@ For 1080p screen recording, 10 minutes:
 | 11 | Save/load project (JSON) | Done |
 | 12 | Keyboard shortcuts (Space, A, R, J/K/L) | Done |
 
-### v0.2 — Hybrid Power (IN PROGRESS)
+### v0.2 — Hybrid Power (COMPLETE)
 
 | Feature | Status |
 |---|---|
 | Manual region redact (rectangle draw) + tracking | Done |
 | Solid box and pixelate redaction styles | Done |
-| Rescan selection range | Backend API done, UI pending |
-| Custom regex rules UI | Backend API done, frontend UI pending |
-| Undo/Redo for all edits | Not started |
+| Rescan selection range | Done |
+| Custom regex rules UI | Done |
+| Undo/Redo for all edits | Done |
 
 ### v0.3 — Robustness
 
@@ -504,19 +504,19 @@ For 1080p screen recording, 10 minutes:
 | Drift detection and tracker reinitialize | Done (implemented early) |
 | Scene-change detection + adaptive sampling | Done (implemented early) |
 | Face detection (OpenCV DNN) | Done (implemented early) |
-| Context rules (field-label adjacency) | Model support exists, logic pending |
-| Batch mode | Not started |
-| Polygon draw (advanced manual regions) | Not started |
+| Context rules (field-label adjacency) | Done |
+| Batch mode | Done |
+| Polygon draw (advanced manual regions) | Done |
 
 ### v1.0 — Production
 
 | Feature | Status |
 |---|---|
 | Audit report output (JSON + HTML) | Done (implemented early) |
-| Role-based presets | Not started |
+| Role-based presets | Done |
 | Segmentation tracking (SAM2) for difficult cases | Not started (enum defined) |
 | Packaging: Windows installer; macOS `.app` bundle | Not started |
-| GPU diagnostics screen | Backend status endpoint exists, dedicated UI pending |
+| GPU diagnostics screen | Done |
 | Telemetry: OFF by default | N/A (no telemetry code) |
 
 ---

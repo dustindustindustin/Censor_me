@@ -45,6 +45,15 @@ export async function getSystemStatus(): Promise<SystemStatus> {
   return data
 }
 
+/**
+ * Fetch detailed GPU diagnostics (VRAM, PyTorch, FFmpeg, system info).
+ * Used by the GPU / Performance tab in Settings.
+ */
+export async function getSystemDiagnostics(): Promise<any> {
+  const { data } = await api.get('/system/diagnostics')
+  return data
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 
 /**
@@ -357,6 +366,33 @@ export async function testRule(
   return data
 }
 
+// ── Presets ───────────────────────────────────────────────────────────────────
+
+export async function getPresets(): Promise<any[]> {
+  const { data } = await api.get('/presets/')
+  return data
+}
+
+export async function getPreset(presetId: string): Promise<any> {
+  const { data } = await api.get(`/presets/${presetId}`)
+  return data
+}
+
+export async function saveCustomPreset(preset: {
+  preset_id: string
+  name: string
+  description?: string
+  category?: string
+  scan_settings: Record<string, unknown>
+}): Promise<{ saved: string }> {
+  const { data } = await api.post('/presets/custom', preset)
+  return data
+}
+
+export async function deleteCustomPreset(presetId: string): Promise<void> {
+  await api.delete(`/presets/custom/${presetId}`)
+}
+
 // ── Export ────────────────────────────────────────────────────────────────────
 
 /**
@@ -406,4 +442,41 @@ export async function getReport(projectId: string, format: 'json' | 'html' = 'js
  */
 export function reportDownloadUrl(projectId: string, format: 'json' | 'html' = 'html'): string {
   return `/api/export/${projectId}/report?format=${format}`
+}
+
+// ── Batch ────────────────────────────────────────────────────────────────────
+
+/** Submit a batch of video file paths for processing. */
+export async function submitBatch(body: {
+  video_paths: string[]
+  scan_settings: import('../types').ScanSettings
+  output_settings: import('../types').OutputSettings
+  auto_accept?: boolean
+  auto_export?: boolean
+}): Promise<{ batch_id: string; total: number; status: string }> {
+  const { data } = await api.post('/batch/submit', body, { timeout: 30_000 })
+  return data
+}
+
+/** List all batch jobs (running and completed). */
+export async function listBatches(): Promise<any[]> {
+  const { data } = await api.get('/batch/')
+  return data
+}
+
+/** Get the current status of a batch job. */
+export async function getBatchStatus(batchId: string): Promise<any> {
+  const { data } = await api.get(`/batch/${batchId}`)
+  return data
+}
+
+/** Cancel a running batch job. */
+export async function cancelBatch(batchId: string): Promise<void> {
+  await api.post(`/batch/${batchId}/cancel`)
+}
+
+/** Open a WebSocket for real-time batch progress events. */
+export function openBatchProgressSocket(batchId: string): WebSocket {
+  const wsBase = window.location.origin.replace(/^http/, 'ws')
+  return new WebSocket(`${wsBase}/ws/batch/progress/${batchId}`)
 }

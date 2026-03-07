@@ -38,6 +38,8 @@ export function VideoPreview({ videoRef, style }: Props) {
     setZoomLevel,
     drawingMode,
     setDrawingMode,
+    polygonDrawMode,
+    setPolygonDrawMode,
     staticDrawMode,
     setStaticDrawMode,
     addEvents,
@@ -59,6 +61,8 @@ export function VideoPreview({ videoRef, style }: Props) {
     setZoomLevel: s.setZoomLevel,
     drawingMode: s.drawingMode,
     setDrawingMode: s.setDrawingMode,
+    polygonDrawMode: s.polygonDrawMode,
+    setPolygonDrawMode: s.setPolygonDrawMode,
     staticDrawMode: s.staticDrawMode,
     setStaticDrawMode: s.setStaticDrawMode,
     addEvents: s.addEvents,
@@ -376,10 +380,18 @@ export function VideoPreview({ videoRef, style }: Props) {
               onClick={() => setDrawingMode(!drawingMode)}
               data-tooltip="Draw a manual redaction box on the video"
             >
-              {drawingMode ? 'Drawing\u2026' : 'Draw Box'}
+              {drawingMode ? 'Drawing…' : 'Draw Box'}
             </button>
 
-            {drawingMode && (
+            <button
+              className={polygonDrawMode ? 'primary' : 'secondary'}
+              onClick={() => setPolygonDrawMode(!polygonDrawMode)}
+              data-tooltip="Draw a freeform polygon redaction (click vertices, double-click to finish)"
+            >
+              {polygonDrawMode ? 'Drawing…' : 'Draw Polygon'}
+            </button>
+
+            {(drawingMode || polygonDrawMode) && (
               <button
                 className={staticDrawMode ? 'primary' : 'ghost'}
                 onClick={() => setStaticDrawMode(!staticDrawMode)}

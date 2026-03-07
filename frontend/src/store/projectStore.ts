@@ -149,6 +149,9 @@ interface ProjectStore {
   /** When true, the overlay canvas accepts mouse events for drawing new boxes. */
   drawingMode: boolean
   setDrawingMode: (on: boolean) => void
+  /** When true, the overlay canvas accepts clicks for polygon vertex placement. */
+  polygonDrawMode: boolean
+  setPolygonDrawMode: (on: boolean) => void
   /** When true, drawn boxes are pinned at a fixed position for the full video (no tracking). */
   staticDrawMode: boolean
   setStaticDrawMode: (on: boolean) => void
@@ -316,7 +319,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   // ── Draw mode ───────────────────────────────────────────────────────────────
 
   drawingMode: false,
-  setDrawingMode: (on) => set({ drawingMode: on }),
+  setDrawingMode: (on) => set({ drawingMode: on, polygonDrawMode: false }),
+  polygonDrawMode: false,
+  setPolygonDrawMode: (on) => set({ polygonDrawMode: on, drawingMode: false }),
   staticDrawMode: false,
   setStaticDrawMode: (on) => set({ staticDrawMode: on }),
 

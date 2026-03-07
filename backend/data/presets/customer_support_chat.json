@@ -1,0 +1,21 @@
+{
+  "preset_id": "customer_support_chat",
+  "name": "Customer Support Chat",
+  "description": "Optimized for chat and messaging recordings. Higher OCR sampling rate to catch fast-scrolling text, lower person threshold to catch customer names.",
+  "category": "specialized",
+  "scan_settings": {
+    "ocr_sample_interval": 3,
+    "ocr_resolution_scale": 1.0,
+    "confidence_threshold": 0.30,
+    "entity_confidence_overrides": {
+      "phone": 0.30,
+      "email": 0.30,
+      "person": 0.40,
+      "ssn": 0.30,
+      "credit_card": 0.30,
+      "account_id": 0.30,
+      "face": 0.35
+    },
+    "detect_faces": true
+  }
+}

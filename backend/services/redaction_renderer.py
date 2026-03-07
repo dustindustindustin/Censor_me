@@ -141,8 +141,10 @@ class RedactionRenderer:
 
                 # Apply redactions for this frame
                 if frame_idx in frame_map:
-                    for event, bbox in frame_map[frame_idx]:
-                        # Scale bbox if resolution changed
+                    for entry in frame_map[frame_idx]:
+                        event, bbox = entry[0], entry[1]
+                        poly = entry[2] if len(entry) > 2 else None
+                        # Scale bbox (and polygon) if resolution changed
                         if (out_width, out_height) != (width, height):
                             sx = out_width / width
                             sy = out_height / height
@@ -152,7 +154,9 @@ class RedactionRenderer:
                                 int(bbox[2] * sx),
                                 int(bbox[3] * sy),
                             )
-                        frame = self._apply_redaction(frame, bbox, event.redaction_style)
+                            if poly:
+                                poly = [[int(px * sx), int(py * sy)] for px, py in poly]
+                        frame = self._apply_redaction(frame, bbox, event.redaction_style, polygon=poly)
 
                 try:
                     proc.stdin.write(frame.tobytes())
@@ -305,11 +309,12 @@ class RedactionRenderer:
             for i, kf in enumerate(keyframes):
                 frame_idx = int((kf.time_ms / 1000) * fps)
                 bbox = (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h)
-                if frame_w > 0 and frame_h > 0:
+                poly = getattr(kf, "polygon", None)
+                if frame_w > 0 and frame_h > 0 and not poly:
                     bbox = self._pad_bbox(bbox, frame_w, frame_h)
 
                 if self._in_time_ranges(frame_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                    frame_map.setdefault(frame_idx, []).append((event, bbox))
+                    frame_map.setdefault(frame_idx, []).append((event, bbox, poly))
 
                 # Interpolate to next keyframe
                 if i < len(keyframes) - 1:
@@ -326,33 +331,45 @@ class RedactionRenderer:
                                 (kf_next.bbox.x, kf_next.bbox.y, kf_next.bbox.w, kf_next.bbox.h),
                                 t,
                             )
-                            if frame_w > 0 and frame_h > 0:
+                            # Interpolate polygon vertices if both keyframes have polygons
+                            interp_poly = None
+                            kf_next_poly = getattr(kf_next, "polygon", None)
+                            if poly and kf_next_poly and len(poly) == len(kf_next_poly):
+                                interp_poly = [
+                                    [int(p[0] + (n[0] - p[0]) * t), int(p[1] + (n[1] - p[1]) * t)]
+                                    for p, n in zip(poly, kf_next_poly)
+                                ]
+                            elif poly:
+                                interp_poly = poly  # hold polygon shape
+                            if frame_w > 0 and frame_h > 0 and not interp_poly:
                                 interp = self._pad_bbox(interp, frame_w, frame_h)
-                            frame_map.setdefault(interp_idx, []).append((event, interp))
+                            frame_map.setdefault(interp_idx, []).append((event, interp, interp_poly))
 
             # --- Temporal pre-pad: hold first bbox before first keyframe ---
             first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
             first_bbox = (keyframes[0].bbox.x, keyframes[0].bbox.y,
                           keyframes[0].bbox.w, keyframes[0].bbox.h)
-            if frame_w > 0 and frame_h > 0:
+            first_poly = getattr(keyframes[0], "polygon", None)
+            if frame_w > 0 and frame_h > 0 and not first_poly:
                 first_bbox = self._pad_bbox(first_bbox, frame_w, frame_h)
 
             for f in range(max(0, first_kf_frame - pad_frames), first_kf_frame):
-                if f not in frame_map or not any(ev is event for ev, _ in frame_map.get(f, [])):
+                if f not in frame_map or not any(e[0] is event for e in frame_map.get(f, [])):
                     if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                        frame_map.setdefault(f, []).append((event, first_bbox))
+                        frame_map.setdefault(f, []).append((event, first_bbox, first_poly))
 
             # --- Temporal post-pad: hold last bbox after last keyframe ---
             last_kf_frame = int((keyframes[-1].time_ms / 1000) * fps)
             last_bbox = (keyframes[-1].bbox.x, keyframes[-1].bbox.y,
                          keyframes[-1].bbox.w, keyframes[-1].bbox.h)
-            if frame_w > 0 and frame_h > 0:
+            last_poly = getattr(keyframes[-1], "polygon", None)
+            if frame_w > 0 and frame_h > 0 and not last_poly:
                 last_bbox = self._pad_bbox(last_bbox, frame_w, frame_h)
 
             for f in range(last_kf_frame + 1, last_kf_frame + pad_frames + 1):
-                if f not in frame_map or not any(ev is event for ev, _ in frame_map.get(f, [])):
+                if f not in frame_map or not any(e[0] is event for e in frame_map.get(f, [])):
                     if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                        frame_map.setdefault(f, []).append((event, last_bbox))
+                        frame_map.setdefault(f, []).append((event, last_bbox, last_poly))
 
         # --- EMA smoothing per event ---
         self._smooth_event_bboxes(frame_map, events)
@@ -386,42 +403,58 @@ class RedactionRenderer:
         frame_map: dict[int, list],
         events: list[RedactionEvent],
     ) -> None:
-        """Apply EMA smoothing to each event's bbox sequence in frame_map."""
+        """Apply EMA smoothing to each event's bbox sequence in frame_map.
+
+        Polygon entries are skipped (smoothing rectangular approximation
+        of a polygon would distort the intended shape).
+        """
         for event in events:
             # Collect sorted frame indices where this event appears
             event_frames: list[int] = []
             for fidx in sorted(frame_map.keys()):
-                for entry_idx, (ev, _bbox) in enumerate(frame_map[fidx]):
-                    if ev is event:
+                for entry_idx, entry in enumerate(frame_map[fidx]):
+                    if entry[0] is event:
                         event_frames.append((fidx, entry_idx))
                         break
 
             if len(event_frames) < 2:
                 continue
 
+            # Skip smoothing for polygon events
+            first_entry = frame_map[event_frames[0][0]][event_frames[0][1]]
+            if len(first_entry) > 2 and first_entry[2]:
+                continue
+
             # Forward EMA pass
-            prev = frame_map[event_frames[0][0]][event_frames[0][1]][1]
+            prev = first_entry[1]
             for fidx, entry_idx in event_frames[1:]:
-                ev, raw = frame_map[fidx][entry_idx]
+                entry = frame_map[fidx][entry_idx]
+                raw = entry[1]
+                poly = entry[2] if len(entry) > 2 else None
                 smoothed = tuple(
                     int(_EMA_ALPHA * raw[i] + (1 - _EMA_ALPHA) * prev[i])
                     for i in range(4)
                 )
-                frame_map[fidx][entry_idx] = (ev, smoothed)
+                frame_map[fidx][entry_idx] = (entry[0], smoothed, poly)
                 prev = smoothed
 
     @staticmethod
-    def _merge_overlapping(
-        entries: list[tuple[RedactionEvent, tuple[int, int, int, int]]],
-    ) -> list[tuple[RedactionEvent, tuple[int, int, int, int]]]:
-        """Merge bboxes that overlap or are within _MERGE_PROXIMITY_PX."""
+    def _merge_overlapping(entries: list) -> list:
+        """Merge bboxes that overlap or are within _MERGE_PROXIMITY_PX.
+
+        Polygon entries are never merged (they have a custom shape that
+        would be destroyed by merging into a rectangular union).
+        """
         if len(entries) <= 1:
             return entries
+
+        # Separate polygon entries (never merge) from rect entries
+        rect_entries = [e for e in entries if not (len(e) > 2 and e[2])]
+        poly_entries = [e for e in entries if len(e) > 2 and e[2]]
 
         def _close(a: tuple, b: tuple) -> bool:
             ax, ay, aw, ah = a
             bx, by, bw, bh = b
-            # Expand each bbox by proximity margin and check overlap
             gap = _MERGE_PROXIMITY_PX
             return not (ax + aw + gap < bx or bx + bw + gap < ax or
                         ay + ah + gap < by or by + bh + gap < ay)
@@ -435,7 +468,7 @@ class RedactionRenderer:
             y2 = max(ay + ah, by + bh)
             return (x1, y1, x2 - x1, y2 - y1)
 
-        result = list(entries)
+        result = list(rect_entries)
         merged = True
         while merged:
             merged = False
@@ -444,21 +477,28 @@ class RedactionRenderer:
                     if _close(result[i][1], result[j][1]):
                         union = _union(result[i][1], result[j][1])
                         keep = result[i] if result[i][0].confidence >= result[j][0].confidence else result[j]
-                        result[i] = (keep[0], union)
+                        poly = keep[2] if len(keep) > 2 else None
+                        result[i] = (keep[0], union, poly)
                         result.pop(j)
                         merged = True
                         break
                 if merged:
                     break
-        return result
+
+        return result + poly_entries
 
     def _apply_redaction(
         self,
         frame: np.ndarray,
         bbox: tuple[int, int, int, int],
         style,
+        polygon: list[list[int]] | None = None,
     ) -> np.ndarray:
-        """Apply blur, pixelate, or solid_box redaction to a region."""
+        """Apply blur, pixelate, or solid_box redaction to a region.
+
+        If ``polygon`` is provided, the redaction is masked to the polygon shape
+        instead of the full rectangular bbox.
+        """
         x, y, w, h = bbox
         x, y = max(0, x), max(0, y)
         x2 = min(frame.shape[1], x + w)
@@ -487,11 +527,20 @@ class RedactionRenderer:
         else:  # solid_box
             color_hex = getattr(style, "color", "#000000").lstrip("#")
             r, g, b = int(color_hex[0:2], 16), int(color_hex[2:4], 16), int(color_hex[4:6], 16)
-            # np.full_like with a tuple fill_value is undefined for uint8 arrays;
-            # np.full with an explicit shape correctly broadcasts (B, G, R) per pixel.
             redacted = np.full(roi.shape, (b, g, r), dtype=roi.dtype)  # OpenCV uses BGR
 
-        frame[y:y2, x:x2] = redacted
+        # Apply polygon mask if present — blend redacted region only within the polygon
+        if polygon and len(polygon) >= 3:
+            # Translate polygon vertices to ROI-local coordinates
+            local_pts = np.array([[px - x, py - y] for px, py in polygon], dtype=np.int32)
+            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [local_pts], 255)
+            mask_3ch = mask[:, :, np.newaxis] / 255.0
+            blended = (redacted * mask_3ch + roi * (1.0 - mask_3ch)).astype(roi.dtype)
+            frame[y:y2, x:x2] = blended
+        else:
+            frame[y:y2, x:x2] = redacted
+
         return frame
 
     def _resolve_output_size(

@@ -1,0 +1,21 @@
+{
+  "preset_id": "screen_recording_pii",
+  "name": "Screen Recording PII",
+  "description": "General-purpose preset for redacting PII in screen recordings. Balanced OCR sampling and moderate confidence thresholds.",
+  "category": "general",
+  "scan_settings": {
+    "ocr_sample_interval": 5,
+    "ocr_resolution_scale": 1.0,
+    "confidence_threshold": 0.35,
+    "entity_confidence_overrides": {
+      "phone": 0.35,
+      "email": 0.35,
+      "person": 0.50,
+      "ssn": 0.35,
+      "credit_card": 0.35,
+      "account_id": 0.35,
+      "face": 0.40
+    },
+    "detect_faces": true
+  }
+}

@@ -8,9 +8,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Plus, Settings, Zap } from 'lucide-react'
+import { ChevronRight, Layers, Plus, Settings, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
 import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
+import { BatchPanel } from './components/BatchPanel/BatchPanel'
 import { ToastContainer } from './components/ToastContainer'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
 import { Inspector } from './components/Inspector/Inspector'
@@ -24,6 +25,7 @@ export default function App() {
   const [initMessage, setInitMessage] = useState('Connecting to backend\u2026')
   const [initError, setInitError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showBatch, setShowBatch] = useState(false)
   const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
@@ -94,11 +96,41 @@ export default function App() {
     )
   }
 
+  if (showBatch) {
+    return (
+      <BatchPanel
+        defaultScanSettings={{
+          preset: 'screen_recording_pii',
+          ocr_sample_interval: 5,
+          ocr_resolution_scale: 1.0,
+          confidence_threshold: 0.35,
+          entity_confidence_overrides: {},
+          detect_faces: true,
+          secure_mode: false,
+          default_redaction_style: { type: 'blur', strength: 15, color: '#000000' },
+        }}
+        defaultOutputSettings={{
+          codec: 'h264',
+          resolution: 'original',
+          custom_width: null,
+          custom_height: null,
+          quality_mode: 'crf',
+          crf: 18,
+          bitrate_kbps: null,
+          use_hw_encoder: true,
+          watermark: false,
+        }}
+        onClose={() => setShowBatch(false)}
+      />
+    )
+  }
+
   if (!project) {
     return (
       <ProjectSelector
         gpuDisplay={systemStatus.gpu.display_name}
         onOpen={handleOpenProject}
+        onBatch={() => setShowBatch(true)}
       />
     )
   }
@@ -167,9 +199,10 @@ export default function App() {
 interface ProjectSelectorProps {
   gpuDisplay: string
   onOpen: (p: Project) => void
+  onBatch: () => void
 }
 
-function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
+function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -259,13 +292,22 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
           </button>
         </div>
       ) : (
-        <button
-          className="primary"
-          onClick={() => setShowNewProject(true)}
-          style={{ padding: 'var(--space-3) var(--space-8)', fontSize: 'var(--font-size-body)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}
-        >
-          <Plus size={16} /> New Project
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+          <button
+            className="primary"
+            onClick={() => setShowNewProject(true)}
+            style={{ padding: 'var(--space-3) var(--space-8)', fontSize: 'var(--font-size-body)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}
+          >
+            <Plus size={16} /> New Project
+          </button>
+          <button
+            className="secondary"
+            onClick={onBatch}
+            style={{ padding: 'var(--space-3) var(--space-6)', fontSize: 'var(--font-size-body)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}
+          >
+            <Layers size={16} /> Batch Mode
+          </button>
+        </div>
       )}
 
       {projects.length > 0 && (
