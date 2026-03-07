@@ -23,6 +23,7 @@ import numpy as np
 
 from backend.models.events import RedactionEvent
 from backend.models.project import OutputSettings
+from backend.utils.gpu_detect import GpuInfo
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class RedactionRenderer:
         events: list[RedactionEvent],
         output_settings: OutputSettings,
         output_dir: Path,
-        gpu_available: bool = False,
+        gpu_info: GpuInfo | None = None,
         on_progress: Callable[[int, int], None] | None = None,
     ) -> Path:
         """
@@ -62,7 +63,7 @@ class RedactionRenderer:
             events: Accepted RedactionEvents to apply.
             output_settings: Codec, quality, resolution settings.
             output_dir: Where to write the output file.
-            gpu_available: Whether NVENC is available for encoding.
+            gpu_info: GPU capabilities detected at startup (None = CPU only).
             on_progress: Optional callback(frame, total) for progress reporting.
 
         Returns:
@@ -84,6 +85,9 @@ class RedactionRenderer:
         )
 
         # Build ffmpeg command
+        hw_encoder = gpu_info.hw_encoder if gpu_info else None
+        use_hw = bool(hw_encoder and output_settings.use_hw_encoder)
+
         ffmpeg_cmd = self._build_ffmpeg_cmd(
             source_video=source_video,
             output_path=output_path,
@@ -91,7 +95,7 @@ class RedactionRenderer:
             fps=fps,
             width=out_width,
             height=out_height,
-            gpu_available=gpu_available,
+            hw_encoder=hw_encoder if use_hw else None,
         )
 
         # Build frame-to-redaction lookup
@@ -173,11 +177,13 @@ class RedactionRenderer:
         stderr = b"".join(stderr_chunks)
 
         if proc.returncode != 0:
-            # Try CPU fallback if NVENC failed
-            if gpu_available and b"nvenc" in stderr.lower():
+            # Try CPU fallback if hardware encoder failed
+            hw_error_markers = [b"nvenc", b"amf", b"videotoolbox", b"hw_encoder"]
+            if use_hw and any(m in stderr.lower() for m in hw_error_markers):
+                logger.warning("Hardware encoder failed, falling back to CPU (libx264)")
                 return await self.render(
                     source_video, events, output_settings, output_dir,
-                    gpu_available=False, on_progress=on_progress
+                    gpu_info=None, on_progress=on_progress
                 )
             raise RuntimeError(f"ffmpeg encoding failed: {stderr.decode()[-2000:]}")
 
@@ -191,11 +197,14 @@ class RedactionRenderer:
         fps: float,
         width: int,
         height: int,
-        gpu_available: bool,
+        hw_encoder: str | None,
     ) -> list[str]:
-        """Construct the ffmpeg command for encoding."""
-        use_nvenc = gpu_available and output_settings.use_nvenc
+        """Construct the ffmpeg command for encoding.
 
+        Args:
+            hw_encoder: ffmpeg encoder name ("h264_nvenc", "h264_amf",
+                        "h264_videotoolbox") or None for CPU (libx264).
+        """
         cmd = [
             "ffmpeg", "-y",
             # Video input: raw BGR frames from stdin
@@ -212,12 +221,27 @@ class RedactionRenderer:
             "-map", "1:a:0?",
         ]
 
-        if use_nvenc:
+        if hw_encoder == "h264_nvenc":
             cmd += [
                 "-vcodec", "h264_nvenc",
                 "-preset", "p4",
                 "-rc:v", "vbr",
-                "-cq:v", str(output_settings.crf),  # NVENC quality equivalent
+                "-cq:v", str(output_settings.crf),
+                "-pix_fmt", "yuv420p",
+            ]
+        elif hw_encoder == "h264_amf":
+            cmd += [
+                "-vcodec", "h264_amf",
+                "-quality", "balanced",
+                "-rc", "vbr_peak",
+                "-qp_i", str(output_settings.crf),
+                "-qp_p", str(output_settings.crf),
+                "-pix_fmt", "yuv420p",
+            ]
+        elif hw_encoder == "h264_videotoolbox":
+            cmd += [
+                "-vcodec", "h264_videotoolbox",
+                "-q:v", "65",
                 "-pix_fmt", "yuv420p",
             ]
         else:
@@ -230,7 +254,7 @@ class RedactionRenderer:
             ]
 
         cmd += [
-            "-acodec", "aac",  # re-encode audio to ensure container compatibility
+            "-acodec", "aac",
             "-movflags", "+faststart",
             str(output_path),
         ]

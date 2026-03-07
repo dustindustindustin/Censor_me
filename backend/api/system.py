@@ -15,8 +15,13 @@ async def get_system_status(request: Request):
     return {
         "ready": True,
         "gpu": {
-            "cuda_available": gpu.cuda_available if gpu else False,
+            "gpu_vendor": gpu.gpu_vendor if gpu else "none",
             "gpu_name": gpu.gpu_name if gpu else None,
+            "cuda_available": gpu.cuda_available if gpu else False,
+            "mps_available": gpu.mps_available if gpu else False,
+            "rocm_available": gpu.rocm_available if gpu else False,
+            "hw_encoder": gpu.hw_encoder if gpu else None,
+            "gpu_available": gpu.gpu_vendor != "none" if gpu else False,
             "nvenc_available": gpu.nvenc_available if gpu else False,
             "display_name": gpu.display_name if gpu else "Unknown",
         },

@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Loader2, Minus, Pause, Play, Plus } from 'lucide-react'
+import videoBg from '../../assets/video-bg.png'
 import { getProject, importVideo, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
@@ -488,11 +489,7 @@ export function VideoPreview({ videoRef, style }: Props) {
             <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>This may take a minute for large files</div>
           </div>
         ) : (
-          <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)' }}>
-            <Play size={40} style={{ opacity: 0.3 }} />
-            <div style={{ fontWeight: 500 }}>Import a video to get started</div>
-            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Drag and drop or click Import Video above</div>
-          </div>
+          <img src={videoBg} alt="" style={{ maxWidth: '80%', maxHeight: '80%', objectFit: 'contain', pointerEvents: 'none' }} />
         )}
       </div>
 

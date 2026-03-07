@@ -515,10 +515,10 @@ function ExportTab({
           <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer' }}>
             <input
               type="checkbox"
-              checked={output.use_nvenc}
-              onChange={(e) => onChange({ ...output, use_nvenc: e.target.checked })}
+              checked={output.use_hw_encoder}
+              onChange={(e) => onChange({ ...output, use_hw_encoder: e.target.checked })}
             />
-            <span style={{ fontSize: 'var(--font-size-body)' }}>Use NVENC (GPU encoder) when available</span>
+            <span style={{ fontSize: 'var(--font-size-body)' }}>Use GPU hardware encoder when available</span>
           </label>
         </Field>
       )}

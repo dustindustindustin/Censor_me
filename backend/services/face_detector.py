@@ -11,6 +11,7 @@ to ``detect_faces()`` and reused for all subsequent calls.
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import cv2
@@ -28,8 +29,14 @@ _CAFFEMODEL_URL = (
 
 
 def _model_dir() -> Path:
-    """Return the directory where face detector model files are cached."""
-    app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "censor_me" / "models"
+    """Return the platform-appropriate directory for cached model files."""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache"))
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    app_data = base / "censor_me" / "models"
     app_data.mkdir(parents=True, exist_ok=True)
     return app_data
 

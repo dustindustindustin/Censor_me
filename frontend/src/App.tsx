@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Plus, Settings, Zap } from 'lucide-react'
+import logoSrc from './assets/logo.svg'
 import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
 import { Inspector } from './components/Inspector/Inspector'
@@ -82,7 +83,7 @@ export default function App() {
   if (!systemStatus) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 'var(--space-4)' }}>
-        <div style={{ fontSize: 'var(--font-size-title)', fontWeight: 600, color: 'var(--accent)' }}>Censor Me</div>
+        <img src={logoSrc} alt="Censor Me" style={{ width: 'clamp(200px, 40vw, 600px)' }} />
         {initError ? (
           <div style={{ color: 'var(--reject)', fontSize: 'var(--font-size-body)', maxWidth: 400, textAlign: 'center' }}>{initError}</div>
         ) : (
@@ -113,9 +114,7 @@ export default function App() {
         gap: 'var(--space-3)',
         fontSize: 'var(--font-size-body)',
       }}>
-        <span style={{ fontWeight: 600, color: 'var(--accent)', cursor: 'pointer' }} onClick={clearProject} title="Back to project list">
-          Censor Me
-        </span>
+        <img src={logoSrc} alt="Censor Me" onClick={clearProject} title="Back to project list" style={{ height: 24, cursor: 'pointer' }} />
         <ChevronRight size={14} style={{ color: 'var(--text-disabled)' }} />
         <span>{project.name}</span>
         {project.video && (
@@ -124,7 +123,7 @@ export default function App() {
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-          {systemStatus.gpu.cuda_available && (
+          {systemStatus.gpu.gpu_available && (
             <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}>
               <Zap size={12} /> {systemStatus.gpu.gpu_name}
             </span>
@@ -152,7 +151,7 @@ export default function App() {
           projectId={project.project_id}
           initialScanSettings={project.scan_settings}
           initialOutputSettings={project.output_settings}
-          gpuAvailable={systemStatus.gpu.cuda_available}
+          gpuAvailable={systemStatus.gpu.gpu_available}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -211,7 +210,7 @@ function ProjectSelector({ gpuDisplay, onOpen }: ProjectSelectorProps) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 'var(--space-6)' }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 'var(--font-size-title)', fontWeight: 600, color: 'var(--accent)' }}>Censor Me</div>
+        <img src={logoSrc} alt="Censor Me" style={{ height: 64 }} />
         <div style={{ color: 'var(--text-muted)', marginTop: 'var(--space-2)' }}>Local GPU-accelerated video PII redaction</div>
         <div style={{ color: 'var(--text-disabled)', fontSize: 'var(--font-size-xs)', marginTop: 'var(--space-1)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}>
           <Zap size={12} /> {gpuDisplay}

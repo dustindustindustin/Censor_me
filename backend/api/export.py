@@ -54,7 +54,6 @@ async def start_export(
         raise HTTPException(status_code=422, detail="No accepted redaction events to export")
 
     gpu_info = getattr(request.app.state, "gpu", None)
-    gpu_available = gpu_info.nvenc_available if gpu_info else False
 
     export_id = str(uuid.uuid4())
     _active_exports[export_id] = {
@@ -67,7 +66,7 @@ async def start_export(
     }
 
     asyncio.create_task(
-        _run_export(export_id, project, proj_dir, accepted_events, gpu_available)
+        _run_export(export_id, project, proj_dir, accepted_events, gpu_info)
     )
 
     return {"export_id": export_id, "status": "running"}
@@ -159,7 +158,7 @@ async def _run_export(
     project: ProjectFile,
     proj_dir: Path,
     accepted_events: list,
-    gpu_available: bool,
+    gpu_info,
 ) -> None:
     """Background export task."""
     export = _active_exports[export_id]
@@ -183,7 +182,7 @@ async def _run_export(
             events=accepted_events,
             output_settings=project.output_settings,
             output_dir=proj_dir / "exports",
-            gpu_available=gpu_available,
+            gpu_info=gpu_info,
             on_progress=on_progress,
         )
         export["status"] = "done"

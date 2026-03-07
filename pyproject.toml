@@ -49,9 +49,10 @@ dev = [
 # All three opencv-* packages install into the same cv2 namespace and conflict;
 # only opencv-contrib-python ships the CSRT tracker we need for tracking.
 [tool.uv]
-# Ensure `uv sync` pulls CUDA-enabled PyTorch, not the CPU-only default from PyPI.
-index-url = "https://pypi.org/simple"
-extra-index-url = ["https://download.pytorch.org/whl/cu130"]
+# PyTorch is NOT listed in [project.dependencies] — it is installed separately
+# by scripts/install-pytorch.sh (or .ps1) which picks the correct variant for
+# the current platform and GPU (CUDA, ROCm, MPS, DirectML, or CPU-only).
+# Do NOT add extra-index-url for PyTorch here; it breaks cross-platform installs.
 
 override-dependencies = [
     # Block opencv-python-headless/opencv-python from being installed transitively

@@ -80,13 +80,21 @@ class OutputSettings(BaseModel):
         default=None,
         description="Target bitrate in kbps when quality_mode='bitrate'."
     )
-    use_nvenc: bool = Field(
+    use_hw_encoder: bool = Field(
         default=True,
         description=(
-            "Attempt NVENC hardware encoding when a compatible GPU is detected. "
-            "Falls back to libx264 automatically if NVENC is unavailable."
+            "Attempt hardware encoding (NVENC, AMF, VideoToolbox) when a compatible "
+            "GPU is detected. Falls back to libx264 automatically if unavailable."
         )
     )
+    # Backward compat: accept use_nvenc from old project files
+    use_nvenc: bool | None = Field(default=None, exclude=True)
+
+    def model_post_init(self, __context) -> None:
+        # Migrate old use_nvenc field into use_hw_encoder
+        if self.use_nvenc is not None:
+            object.__setattr__(self, "use_hw_encoder", self.use_nvenc)
+            object.__setattr__(self, "use_nvenc", None)
     watermark: bool = Field(
         default=False,
         description="Overlay a 'Redacted' watermark on the exported video."

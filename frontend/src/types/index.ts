@@ -143,8 +143,13 @@ export interface Project {
 
 /** Hardware acceleration info returned by GET /system/status. */
 export interface GpuInfo {
-  cuda_available: boolean
+  gpu_vendor: string
   gpu_name: string | null
+  cuda_available: boolean
+  mps_available: boolean
+  rocm_available: boolean
+  hw_encoder: string | null
+  gpu_available: boolean
   nvenc_available: boolean
   /** Human-readable string for the status bar, e.g. "GPU: RTX A4500". */
   display_name: string
@@ -204,7 +209,7 @@ export interface OutputSettings {
   quality_mode: string
   crf: number
   bitrate_kbps: number | null
-  use_nvenc: boolean
+  use_hw_encoder: boolean
   watermark: boolean
 }
 
