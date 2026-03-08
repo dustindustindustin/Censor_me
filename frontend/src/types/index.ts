@@ -283,6 +283,7 @@ export interface ScanPreviewBox {
 
 export type ScanProgressEvent =
   | { stage: 'starting'; total_ocr_frames: number }
+  | { stage: 'warming_up'; message: string }
   | { stage: 'ocr'; frame: number; time_ms: number; ocr_boxes: number; findings_so_far: number; progress_pct: number; scan_boxes: ScanPreviewBox[] }
   | { stage: 'scene_change'; frame: number; time_ms: number }
   | { stage: 'linking'; total_candidates: number; progress_pct?: number }
@@ -291,8 +292,10 @@ export type ScanProgressEvent =
   | { stage: 'refine_done'; events_found: number; extra_candidates: number }
   | { stage: 'tracking'; total_events: number }
   | { stage: 'track'; frames_done: number; total_frames: number; active_trackers: number; progress_pct: number; time_ms: number }
-  | { stage: 'done'; total_findings: number }
+  | { stage: 'warning'; code: string; message: string }
+  | { stage: 'done'; total_findings: number; status?: string }
   | { stage: 'error'; message: string }
+  | { stage: 'cancelled'; message: string }
 
 // ── Batch mode ───────────────────────────────────────────────────────────────
 

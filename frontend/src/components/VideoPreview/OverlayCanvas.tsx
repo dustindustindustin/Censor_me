@@ -322,7 +322,11 @@ export function OverlayCanvas({
               }
             }
           } else {
-            // Placeholder colored boxes (standard behavior)
+            // Placeholder colored boxes — color-coded by source and status:
+            //   selected          → accent (pink) outline
+            //   auto + pending    → amber outline  (dashed)
+            //   auto + accepted   → green outline
+            //   manual (any)      → orange outline
             for (const event of activeEvents) {
               const rawBbox = interpolateBbox(event, currentTimeMs)
               if (!rawBbox) continue
@@ -330,23 +334,36 @@ export function OverlayCanvas({
 
               const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
               const isSelected = event.event_id === selectedEventId
+              const isManual = event.source === 'manual'
               const isPending = event.status === 'pending'
 
-              ctx.fillStyle = isSelected
-                ? theme.accentFill
-                : isPending
-                ? theme.pendingFill
-                : theme.acceptFill
+              let strokeColor: string
+              let fillColor: string
+              if (isSelected) {
+                strokeColor = theme.accent
+                fillColor = theme.accentFill
+              } else if (isManual) {
+                strokeColor = theme.manual
+                fillColor = theme.manualFill
+              } else if (isPending) {
+                strokeColor = theme.pending
+                fillColor = theme.pendingFill
+              } else {
+                strokeColor = theme.accept
+                fillColor = theme.acceptFill
+              }
+
+              ctx.fillStyle = fillColor
               ctx.fillRect(rx, ry, rw, rh)
 
-              ctx.strokeStyle = isSelected ? theme.accent : isPending ? theme.pending : theme.accept
+              ctx.strokeStyle = strokeColor
               ctx.lineWidth = isSelected ? 2 : 1
-              ctx.setLineDash(isPending ? [4, 2] : [])
+              ctx.setLineDash(isPending && !isSelected ? [4, 2] : [])
               ctx.strokeRect(rx, ry, rw, rh)
               ctx.setLineDash([])
 
               ctx.font = `10px ${theme.fontFamily}`
-              ctx.fillStyle = ctx.strokeStyle
+              ctx.fillStyle = strokeColor
               ctx.fillText(event.pii_type.toUpperCase(), rx + 3, ry - 3)
 
               // Resize handles for the selected event

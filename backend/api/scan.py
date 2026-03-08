@@ -4,14 +4,17 @@ Scan API — triggers the OCR + PII detection pipeline.
 POST /scan/start/{project_id}    — start a scan (returns scan_id)
 WS   /scan/progress/{scan_id}    — real-time progress stream
 GET  /scan/status/{scan_id}      — poll status (alternative to WebSocket)
+POST /scan/cancel/{scan_id}      — cancel a running scan
 """
 
 import asyncio
+import json
 import logging
 import time
 import uuid
 from collections import deque
 from pathlib import Path
+from uuid import UUID
 
 import cv2
 
@@ -37,10 +40,33 @@ _scanning_projects: dict[str, str] = {}
 _scan_lock = asyncio.Lock()
 
 
+def _scan_status_path(proj_dir: Path) -> Path:
+    return proj_dir / ".scan_status.json"
+
+
+def _write_scan_status(proj_dir: Path, scan_id: str) -> None:
+    """Write a status file so we can detect interrupted scans after a restart."""
+    try:
+        _scan_status_path(proj_dir).write_text(
+            json.dumps({"scan_id": scan_id, "status": "running", "started_at": time.time()})
+        )
+    except OSError:
+        pass
+
+
+def _clear_scan_status(proj_dir: Path) -> None:
+    """Remove the scan status file once the scan completes or errors."""
+    try:
+        _scan_status_path(proj_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 @router.post("/start/{project_id}")
-async def start_scan(project_id: str, request: Request):
+async def start_scan(project_id: UUID, request: Request):
     """Kick off a scan for the given project. Returns a scan_id to track progress."""
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -59,8 +85,8 @@ async def start_scan(project_id: str, request: Request):
         for sid in stale_ids:
             _active_scans.pop(sid, None)
 
-        if project_id in _scanning_projects:
-            existing_scan_id = _scanning_projects[project_id]
+        if pid in _scanning_projects:
+            existing_scan_id = _scanning_projects[pid]
             return {"scan_id": existing_scan_id, "resumed": True}
 
         # Read GPU availability from app state (set during startup)
@@ -69,16 +95,34 @@ async def start_scan(project_id: str, request: Request):
 
         scan_id = str(uuid.uuid4())
         _active_scans[scan_id] = {
-            "project_id": project_id,
+            "project_id": pid,
             "status": "queued",
             "progress": deque(maxlen=500),
             "created_at": now,
+            "task": None,
         }
-        _scanning_projects[project_id] = scan_id
+        _scanning_projects[pid] = scan_id
 
-    asyncio.create_task(_run_scan(scan_id, project, proj_dir, use_gpu))
+    _write_scan_status(proj_dir, scan_id)
+    task = asyncio.create_task(_run_scan(scan_id, project, proj_dir, use_gpu))
+    _active_scans[scan_id]["task"] = task
 
     return {"scan_id": scan_id, "resumed": False}
+
+
+@router.post("/cancel/{scan_id}")
+async def cancel_scan(scan_id: str):
+    """Cancel a running scan by its scan_id."""
+    scan = _active_scans.get(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    task = scan.get("task")
+    if task and not task.done():
+        task.cancel()
+        return {"cancelled": scan_id}
+
+    return {"cancelled": scan_id, "note": "Scan already finished"}
 
 
 @router.websocket("/progress/{scan_id}")
@@ -98,7 +142,7 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
     last_sent = 0
 
     try:
-        while scan["status"] not in ("done", "error"):
+        while scan["status"] not in ("done", "error", "cancelled"):
             progress = scan["progress"]
             current_len = len(progress)
             # If the bounded deque evicted items, reset to avoid stale indices
@@ -129,7 +173,7 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
 
 
 @router.get("/active/{project_id}")
-async def get_active_scan(project_id: str):
+async def get_active_scan(project_id: UUID):
     """
     Return the running scan_id for a project, if one exists.
 
@@ -139,12 +183,27 @@ async def get_active_scan(project_id: str):
     buffered progress events without starting a new scan.
 
     Returns 404 if no scan is currently running for this project.
+    Also checks for interrupted scans (backend restarted mid-scan).
     """
-    scan_id = _scanning_projects.get(project_id)
-    if scan_id is None:
-        raise HTTPException(status_code=404, detail="No active scan for this project")
-    scan = _active_scans.get(scan_id, {})
-    return {"scan_id": scan_id, "status": scan.get("status", "unknown")}
+    pid = str(project_id)
+    scan_id = _scanning_projects.get(pid)
+    if scan_id is not None:
+        scan = _active_scans.get(scan_id, {})
+        return {"scan_id": scan_id, "status": scan.get("status", "unknown")}
+
+    # Check for interrupted scan status file (backend restarted mid-scan)
+    status_file = _scan_status_path(project_dir(pid))
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text())
+            if data.get("status") == "running":
+                # Mark as interrupted so the UI can prompt recovery
+                status_file.unlink(missing_ok=True)
+                return {"scan_id": data.get("scan_id", "unknown"), "status": "interrupted"}
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    raise HTTPException(status_code=404, detail="No active scan for this project")
 
 
 @router.get("/status/{scan_id}")
@@ -161,7 +220,7 @@ async def get_scan_status(scan_id: str):
 
 
 @router.get("/test-frame/{project_id}")
-async def test_frame(project_id: str, request: Request, frame_index: int = 0):
+async def test_frame(project_id: UUID, request: Request, frame_index: int = 0):
     """
     Diagnostic endpoint: run OCR + Presidio on a single frame and return raw results.
 
@@ -172,7 +231,8 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
     Query params:
         frame_index: Which frame to sample (default: 0). Try 30, 60, 90, etc.
     """
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -195,16 +255,18 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
         from backend.services.pii_classifier import PiiClassifier
 
         cap = cv2.VideoCapture(str(video_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
-        if not fps or fps <= 0:
-            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
-            fps = 30.0
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
+            if not fps or fps <= 0:
+                logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+                fps = 30.0
 
-        safe_idx = min(frame_index, max(0, total_frames - 1))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
-        ret, frame = cap.read()
-        cap.release()
+            safe_idx = min(frame_index, max(0, total_frames - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
+            ret, frame = cap.read()
+        finally:
+            cap.release()
 
         if not ret or frame is None:
             return {
@@ -220,8 +282,6 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
         ocr_results = ocr.process_frame(frame)
 
         # --- Presidio: two-pass for full diagnostic visibility ---
-        # Pass 1: raw Presidio output with NO filtering (all entity types, all scores)
-        # Pass 2: through the real PiiClassifier (applies type map + quality filters)
         presidio_error = None
         raw_results = []
         classifier_candidates = []
@@ -229,7 +289,6 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
             from presidio_analyzer import AnalyzerEngine
             from backend.services.pii_classifier import PiiClassifier, _PRESIDIO_TYPE_MAP, _PERSON_MIN_CHARS
 
-            # Build composite text the same way PiiClassifier does
             separator = "\n"
             composite = ""
             for box in ocr_results:
@@ -242,7 +301,6 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
             for r in presidio_raw:
                 matched = composite[r.start:r.end].strip()
                 mapped_type = _PRESIDIO_TYPE_MAP.get(r.entity_type)
-                # Determine why a result would be excluded
                 if mapped_type is None:
                     skip_reason = f"entity type '{r.entity_type}' not in type map"
                 elif r.entity_type == "PERSON" and len(matched) < _PERSON_MIN_CHARS:
@@ -262,8 +320,6 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
                     "would_appear_in_scan": skip_reason is None,
                 })
 
-            # Pass 2: run through actual classifier (Presidio + regex rules) for the
-            # authoritative candidate list — same code path as the real scan.
             rules = [r.model_dump() for r in get_all_rules()]
             classifier = PiiClassifier(
                 confidence_threshold=threshold,
@@ -315,7 +371,7 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
 
 
 @router.post("/track-event/{project_id}/{event_id}")
-async def track_manual_event(project_id: str, event_id: str, static: bool = False):
+async def track_manual_event(project_id: UUID, event_id: str, static: bool = False):
     """
     Run tracking on a manually-drawn single-keyframe event.
 
@@ -330,7 +386,8 @@ async def track_manual_event(project_id: str, event_id: str, static: bool = Fals
     from backend.models.events import TimeRange
     from backend.services.tracker_service import TrackerService
 
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -359,7 +416,7 @@ async def track_manual_event(project_id: str, event_id: str, static: bool = Fals
         event = await asyncio.to_thread(tracker.track_backward, event, str(video_path), fps)
 
     # Persist the updated event
-    async with get_project_lock(project_id):
+    async with get_project_lock(pid):
         fresh = ProjectFile.load(proj_dir)
         for i, e in enumerate(fresh.events):
             if e.event_id == event_id:
@@ -371,7 +428,7 @@ async def track_manual_event(project_id: str, event_id: str, static: bool = Fals
 
 
 @router.post("/frame/{project_id}")
-async def scan_single_frame(project_id: str, request: Request, frame_index: int = 0):
+async def scan_single_frame(project_id: UUID, request: Request, frame_index: int = 0):
     """
     Scan a single frame for PII and save results as pending RedactionEvents.
 
@@ -390,7 +447,8 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
     from backend.services.pii_classifier import PiiClassifier
     from backend.services.tracker_service import TrackerService
 
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -407,16 +465,18 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
 
     def _run():
         cap = cv2.VideoCapture(str(video_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
-        if not fps or fps <= 0:
-            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
-            fps = 30.0
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or project.video.fps
+            if not fps or fps <= 0:
+                logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+                fps = 30.0
 
-        safe_idx = min(frame_index, max(0, total_frames - 1))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
-        ret, frame = cap.read()
-        cap.release()
+            safe_idx = min(frame_index, max(0, total_frames - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, safe_idx)
+            ret, frame = cap.read()
+        finally:
+            cap.release()
 
         if not ret or frame is None:
             return [], fps
@@ -450,7 +510,6 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
                 redaction_style=default_style,
                 status="pending",
             )
-            # track_event is a no-op for single-keyframe events; included for future compat
             tracked = tracker.track_event(event, str(video_path), fps)
             new_events.append(tracked)
 
@@ -459,7 +518,7 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
     new_events, _fps = await asyncio.to_thread(_run)
 
     # Reload before appending to avoid clobbering any concurrent writes
-    async with get_project_lock(project_id):
+    async with get_project_lock(pid):
         fresh = ProjectFile.load(proj_dir)
         fresh.events.extend(new_events)
         fresh.save(proj_dir)
@@ -472,7 +531,7 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
 
 
 @router.post("/range/{project_id}")
-async def start_range_scan(project_id: str, request: Request, start_ms: int = 0, end_ms: int = 0):
+async def start_range_scan(project_id: UUID, request: Request, start_ms: int = 0, end_ms: int = 0):
     """
     Start a partial scan covering only the given time range (start_ms to end_ms).
 
@@ -482,7 +541,8 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
 
     Returns a scan_id immediately. Connect to WS /scan/progress/{scan_id} for progress.
     """
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -491,8 +551,8 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
         raise HTTPException(status_code=422, detail="No video imported for this project")
 
     async with _scan_lock:
-        if project_id in _scanning_projects:
-            existing_scan_id = _scanning_projects[project_id]
+        if pid in _scanning_projects:
+            existing_scan_id = _scanning_projects[pid]
             return {"scan_id": existing_scan_id, "resumed": True}
 
         fps = project.video.fps
@@ -504,16 +564,19 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
 
         scan_id = str(uuid.uuid4())
         _active_scans[scan_id] = {
-            "project_id": project_id,
+            "project_id": pid,
             "status": "queued",
             "progress": deque(maxlen=500),
             "created_at": time.time(),
+            "task": None,
         }
-        _scanning_projects[project_id] = scan_id
+        _scanning_projects[pid] = scan_id
 
-    asyncio.create_task(
+    _write_scan_status(proj_dir, scan_id)
+    task = asyncio.create_task(
         _run_range_scan(scan_id, project, proj_dir, use_gpu, start_frame, end_frame)
     )
+    _active_scans[scan_id]["task"] = task
 
     return {"scan_id": scan_id, "resumed": False}
 
@@ -550,12 +613,17 @@ async def _run_range_scan(
         scan["status"] = "done"
         emit({"stage": "done", "total_findings": len(new_events)})
 
+    except asyncio.CancelledError:
+        scan["status"] = "cancelled"
+        emit({"stage": "cancelled", "message": "Scan was cancelled"})
+        raise
     except Exception as e:
         logger.exception("Range scan %s failed: %s", scan_id, e)
         scan["status"] = "error"
         emit({"stage": "error", "message": str(e)})
     finally:
         _scanning_projects.pop(scan["project_id"], None)
+        _clear_scan_status(proj_dir)
 
 
 async def _run_scan(
@@ -584,9 +652,14 @@ async def _run_scan(
         scan["status"] = "done"
         emit({"stage": "done", "total_findings": len(events)})
 
+    except asyncio.CancelledError:
+        scan["status"] = "cancelled"
+        emit({"stage": "cancelled", "message": "Scan was cancelled"})
+        raise
     except Exception as e:
         logger.exception("Scan %s failed: %s", scan_id, e)
         scan["status"] = "error"
         emit({"stage": "error", "message": str(e)})
     finally:
         _scanning_projects.pop(scan["project_id"], None)
+        _clear_scan_status(proj_dir)

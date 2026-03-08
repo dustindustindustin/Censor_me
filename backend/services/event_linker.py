@@ -167,62 +167,69 @@ def _merge_nearby_events(events: list[RedactionEvent]) -> list[RedactionEvent]:
     time and overlap spatially (IoU > threshold). This catches cases where the
     same text briefly disappears and reappears, creating separate events that
     should logically be one continuous redaction.
+
+    Algorithm: O(N log N) single greedy pass after sorting by (pii_type, start_ms).
+    Two events can only merge if they are the same type and temporally adjacent,
+    so sorting eliminates all cross-type and temporally-distant comparisons.
     """
     if len(events) < 2:
         return events
 
-    merged = True
-    while merged:
-        merged = False
-        for i in range(len(events)):
-            for j in range(i + 1, len(events)):
-                ev_a, ev_b = events[i], events[j]
+    def _event_start(e: RedactionEvent) -> int:
+        return min((tr.start_ms for tr in e.time_ranges), default=0)
 
-                if ev_a.pii_type != ev_b.pii_type:
-                    continue
+    def _event_end(e: RedactionEvent) -> int:
+        return max((tr.end_ms for tr in e.time_ranges), default=0)
 
-                # Check time proximity: gap between the two events
-                a_end = max(tr.end_ms for tr in ev_a.time_ranges) if ev_a.time_ranges else 0
-                b_start = min(tr.start_ms for tr in ev_b.time_ranges) if ev_b.time_ranges else 0
-                b_end = max(tr.end_ms for tr in ev_b.time_ranges) if ev_b.time_ranges else 0
-                a_start = min(tr.start_ms for tr in ev_a.time_ranges) if ev_a.time_ranges else 0
+    # Sort by pii_type then start time so mergeable candidates are adjacent
+    events.sort(key=lambda e: (str(e.pii_type), _event_start(e)))
 
-                gap = min(abs(b_start - a_end), abs(a_start - b_end))
-                if gap > _TIME_GAP_THRESHOLD_MS:
-                    continue
+    result: list[RedactionEvent] = []
 
-                # Check spatial overlap using nearest keyframes
-                if not ev_a.keyframes or not ev_b.keyframes:
-                    continue
+    for ev in events:
+        if not result:
+            result.append(ev)
+            continue
 
-                # Compare the closest keyframes in time
-                best_iou = 0.0
-                for kf_a in [ev_a.keyframes[0], ev_a.keyframes[-1]]:
-                    for kf_b in [ev_b.keyframes[0], ev_b.keyframes[-1]]:
-                        iou = _bbox_iou(
-                            (kf_a.bbox.x, kf_a.bbox.y, kf_a.bbox.w, kf_a.bbox.h),
-                            (kf_b.bbox.x, kf_b.bbox.y, kf_b.bbox.w, kf_b.bbox.h),
-                        )
-                        best_iou = max(best_iou, iou)
+        prev = result[-1]
 
-                if best_iou < _MERGE_IOU_THRESHOLD:
-                    continue
+        # Different PII type → never merge
+        if prev.pii_type != ev.pii_type:
+            result.append(ev)
+            continue
 
-                # Merge b into a: combine keyframes, extend time_ranges, take max confidence
-                ev_a.keyframes.extend(ev_b.keyframes)
-                ev_a.keyframes.sort(key=lambda kf: kf.time_ms)
+        # Time gap check — only the immediately preceding event needs to be checked
+        # because the list is sorted by start time
+        gap = _event_start(ev) - _event_end(prev)
+        if gap > _TIME_GAP_THRESHOLD_MS:
+            result.append(ev)
+            continue
 
-                # Merge time ranges into a single span covering both
-                all_starts = [tr.start_ms for tr in ev_a.time_ranges] + [tr.start_ms for tr in ev_b.time_ranges]
-                all_ends = [tr.end_ms for tr in ev_a.time_ranges] + [tr.end_ms for tr in ev_b.time_ranges]
-                ev_a.time_ranges = [TimeRange(start_ms=min(all_starts), end_ms=max(all_ends))]
+        # Spatial overlap check using boundary keyframes
+        if not prev.keyframes or not ev.keyframes:
+            result.append(ev)
+            continue
 
-                ev_a.confidence = max(ev_a.confidence, ev_b.confidence)
+        best_iou = 0.0
+        for kf_a in [prev.keyframes[0], prev.keyframes[-1]]:
+            for kf_b in [ev.keyframes[0], ev.keyframes[-1]]:
+                iou = _bbox_iou(
+                    (kf_a.bbox.x, kf_a.bbox.y, kf_a.bbox.w, kf_a.bbox.h),
+                    (kf_b.bbox.x, kf_b.bbox.y, kf_b.bbox.w, kf_b.bbox.h),
+                )
+                best_iou = max(best_iou, iou)
 
-                events.pop(j)
-                merged = True
-                break
-            if merged:
-                break
+        if best_iou < _MERGE_IOU_THRESHOLD:
+            result.append(ev)
+            continue
 
-    return events
+        # Merge ev into prev
+        prev.keyframes.extend(ev.keyframes)
+        prev.keyframes.sort(key=lambda kf: kf.time_ms)
+
+        all_starts = [tr.start_ms for tr in prev.time_ranges] + [tr.start_ms for tr in ev.time_ranges]
+        all_ends = [tr.end_ms for tr in prev.time_ranges] + [tr.end_ms for tr in ev.time_ranges]
+        prev.time_ranges = [TimeRange(start_ms=min(all_starts), end_ms=max(all_ends))]
+        prev.confidence = max(prev.confidence, ev.confidence)
+
+    return result

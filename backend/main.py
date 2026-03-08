@@ -9,6 +9,7 @@ Startup sequence:
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -32,7 +33,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup on shutdown (if needed)
+    logger.info("Backend shutting down cleanly")
 
 
 app = FastAPI(
@@ -42,14 +43,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# In portable/packaged mode only allow Tauri origins; in dev also allow Vite dev server.
+_is_portable = os.environ.get("CENSOR_ME_PORTABLE") == "1"
+_allowed_origins = ["http://tauri.localhost", "https://tauri.localhost"]
+if not _is_portable:
+    _allowed_origins += ["http://localhost:5173", "http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],

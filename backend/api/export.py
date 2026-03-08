@@ -12,6 +12,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -32,7 +33,7 @@ _active_exports: dict[str, dict] = {}
 
 @router.post("/{project_id}")
 async def start_export(
-    project_id: str,
+    project_id: UUID,
     request: Request,
     output_settings: OutputSettings | None = None,
 ):
@@ -40,7 +41,8 @@ async def start_export(
     Start exporting a redacted video in the background.
     Returns an export_id — connect to WS /export/progress/{export_id} for progress.
     """
-    proj_dir = project_dir(project_id)
+    pid = str(project_id)
+    proj_dir = project_dir(pid)
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -59,7 +61,7 @@ async def start_export(
 
     export_id = str(uuid.uuid4())
     _active_exports[export_id] = {
-        "project_id": project_id,
+        "project_id": pid,
         "status": "running",
         "current_frame": 0,
         "total_frames": 0,
@@ -117,7 +119,7 @@ async def export_progress_ws(websocket: WebSocket, export_id: str):
 
 
 @router.get("/{project_id}/status/{export_id}")
-async def get_export_status(project_id: str, export_id: str):
+async def get_export_status(project_id: UUID, export_id: str):
     """Poll-based alternative to WebSocket."""
     if export_id not in _active_exports:
         raise HTTPException(status_code=404, detail="Export not found")
@@ -125,15 +127,20 @@ async def get_export_status(project_id: str, export_id: str):
 
 
 @router.get("/{project_id}/download")
-async def download_export(project_id: str):
+async def download_export(project_id: UUID):
     """Download the most recent exported video for a project."""
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     exports_dir = proj_dir / "exports"
 
     if not exports_dir.exists():
         raise HTTPException(status_code=404, detail="No exports found")
 
-    exports = sorted(exports_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Only serve completed (non-temp) files
+    exports = sorted(
+        [p for p in exports_dir.glob("*.mp4") if not p.name.endswith(".tmp")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not exports:
         raise HTTPException(status_code=404, detail="No export files found")
 
@@ -145,25 +152,48 @@ class _CopyToRequest(BaseModel):
 
 
 @router.post("/{project_id}/copy-to")
-async def copy_export_to(project_id: str, body: _CopyToRequest):
+async def copy_export_to(project_id: UUID, body: _CopyToRequest):
     """Copy the latest exported video to a user-chosen path (used by Tauri save dialog)."""
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     exports_dir = proj_dir / "exports"
     if not exports_dir.exists():
         raise HTTPException(status_code=404, detail="No exports found")
-    exports = sorted(exports_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    # Only copy completed (non-temp) files
+    exports = sorted(
+        [p for p in exports_dir.glob("*.mp4") if not p.name.endswith(".tmp")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not exports:
         raise HTTPException(status_code=404, detail="No export files found")
-    dest = Path(body.destination)
+
+    # --- Path traversal protection ---
+    dest = Path(body.destination).resolve()
+
+    # Destination must be an absolute path (the Tauri save dialog always provides one)
+    if not dest.is_absolute():
+        raise HTTPException(status_code=400, detail="Destination must be an absolute path")
+
+    # Prevent writing inside the projects data directory
+    try:
+        dest.relative_to(PROJECTS_DIR.resolve())
+        raise HTTPException(
+            status_code=400,
+            detail="Destination must be outside the projects directory",
+        )
+    except ValueError:
+        pass  # Good — destination is outside PROJECTS_DIR
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exports[0], dest)
     return {"saved_to": str(dest)}
 
 
 @router.get("/{project_id}/report")
-async def get_report(project_id: str, format: str = "json"):
+async def get_report(project_id: UUID, format: str = "json"):
     """Generate and return an audit report (json or html)."""
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 

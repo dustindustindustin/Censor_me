@@ -11,6 +11,7 @@ Each project gets its own sub-directory named after its UUID.
 """
 
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
@@ -66,21 +67,21 @@ async def create_project(name: str = "Untitled Project") -> dict:
 
 
 @router.get("/{project_id}")
-async def get_project(project_id: str) -> ProjectFile:
+async def get_project(project_id: UUID) -> ProjectFile:
     """
     Load and return a complete project by ID.
 
     Returns the full ``ProjectFile`` model including all events and settings.
     Used by the frontend after import, scan, and on project open.
     """
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
     return ProjectFile.load(proj_dir)
 
 
 @router.delete("/{project_id}")
-async def delete_project(project_id: str):
+async def delete_project(project_id: UUID):
     """
     Permanently delete a project directory and all its contents.
 
@@ -89,15 +90,15 @@ async def delete_project(project_id: str):
     """
     import shutil
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
     shutil.rmtree(proj_dir)
-    return {"deleted": project_id}
+    return {"deleted": str(project_id)}
 
 
 @router.post("/{project_id}/events")
-async def add_event(project_id: str, event: dict) -> dict:
+async def add_event(project_id: UUID, event: dict) -> dict:
     """
     Append a single RedactionEvent to the project.
 
@@ -107,12 +108,12 @@ async def add_event(project_id: str, event: dict) -> dict:
     """
     from backend.models.events import RedactionEvent
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
     validated = RedactionEvent.model_validate(event)
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         project.events.append(validated)
         project.save(proj_dir)
@@ -120,7 +121,7 @@ async def add_event(project_id: str, event: dict) -> dict:
 
 
 @router.patch("/{project_id}/events/{event_id}/style")
-async def update_event_style(project_id: str, event_id: str, body: dict) -> dict:
+async def update_event_style(project_id: UUID, event_id: str, body: dict) -> dict:
     """
     Update the redaction style for a single event.
 
@@ -131,11 +132,11 @@ async def update_event_style(project_id: str, event_id: str, body: dict) -> dict
     """
     from backend.models.events import RedactionStyle
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         for event in project.events:
             if event.event_id == event_id:
@@ -147,7 +148,7 @@ async def update_event_style(project_id: str, event_id: str, body: dict) -> dict
 
 
 @router.patch("/{project_id}/events/{event_id}/keyframes")
-async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> dict:
+async def update_event_keyframes(project_id: UUID, event_id: str, body: dict) -> dict:
     """
     Replace a single event's keyframe list.
 
@@ -159,14 +160,14 @@ async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> 
     """
     from backend.models.events import Keyframe
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
     raw_keyframes = body.get("keyframes", [])
     validated_kfs = [Keyframe.model_validate(kf) for kf in raw_keyframes]
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         for event in project.events:
             if event.event_id == event_id:
@@ -178,7 +179,7 @@ async def update_event_keyframes(project_id: str, event_id: str, body: dict) -> 
 
 
 @router.patch("/{project_id}/settings")
-async def update_settings(project_id: str, body: dict) -> ProjectFile:
+async def update_settings(project_id: UUID, body: dict) -> ProjectFile:
     """
     Update scan and/or output settings for a project.
 
@@ -187,11 +188,11 @@ async def update_settings(project_id: str, body: dict) -> ProjectFile:
     """
     from backend.models.project import ScanSettings, OutputSettings
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         if "scan_settings" in body:
             merged = project.scan_settings.model_dump() | body["scan_settings"]
@@ -204,7 +205,7 @@ async def update_settings(project_id: str, body: dict) -> ProjectFile:
 
 
 @router.patch("/{project_id}/events/bulk-status")
-async def bulk_update_event_status(project_id: str, body: dict):
+async def bulk_update_event_status(project_id: UUID, body: dict):
     """
     Accept, reject, or reset all (or a subset of) events in a single request.
 
@@ -225,11 +226,11 @@ async def bulk_update_event_status(project_id: str, body: dict):
     if status not in valid_statuses:
         raise HTTPException(status_code=422, detail=f"Status must be one of {valid_statuses}")
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         event_id_set = set(event_ids) if event_ids is not None else None
         updated = 0
@@ -243,7 +244,7 @@ async def bulk_update_event_status(project_id: str, body: dict):
 
 
 @router.patch("/{project_id}/events/bulk-style")
-async def bulk_update_event_style(project_id: str, body: dict):
+async def bulk_update_event_style(project_id: UUID, body: dict):
     """
     Apply a redaction style to all (or a subset of) events in a single request.
 
@@ -265,11 +266,11 @@ async def bulk_update_event_style(project_id: str, body: dict):
     event_ids: list[str] | None = body.get("event_ids")
     style = RedactionStyle.model_validate(style_data)
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
         event_id_set = set(event_ids) if event_ids is not None else None
         updated = 0
@@ -283,7 +284,7 @@ async def bulk_update_event_style(project_id: str, body: dict):
 
 
 @router.patch("/{project_id}/events/{event_id}/status")
-async def update_event_status(project_id: str, event_id: str, status: str):
+async def update_event_status(project_id: UUID, event_id: str, status: str):
     """
     Accept or reject a single redaction event.
 
@@ -300,9 +301,9 @@ async def update_event_status(project_id: str, event_id: str, status: str):
     if status not in valid_statuses:
         raise HTTPException(status_code=422, detail=f"Status must be one of {valid_statuses}")
 
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
 
-    async with get_project_lock(project_id):
+    async with get_project_lock(str(project_id)):
         project = ProjectFile.load(proj_dir)
 
         for event in project.events:

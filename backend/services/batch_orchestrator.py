@@ -160,6 +160,7 @@ async def _run_batch(job: BatchJob, use_gpu: bool) -> None:
             "filename": item["filename"],
         })
 
+        proj_dir = None
         try:
             # --- Create project for this video ---
             project = ProjectFile(name=f"Batch — {item['filename']}")
@@ -293,6 +294,13 @@ async def _run_batch(job: BatchJob, use_gpu: bool) -> None:
             logger.exception("Batch %s: video %d (%s) failed: %s", job.batch_id, idx, item["filename"], e)
             item["status"] = "error"
             item["error"] = str(e)
+            # Clean up the orphaned project directory to prevent accumulation of
+            # partial project data on disk. Only clean up if the project dir was
+            # created by this batch run (proj_dir is set after mkdir succeeds).
+            if proj_dir is not None and proj_dir.exists():
+                import shutil as _shutil
+                _shutil.rmtree(proj_dir, ignore_errors=True)
+                logger.info("Batch %s: cleaned up orphaned project dir %s", job.batch_id, proj_dir)
             job.emit({
                 "stage": "video_error",
                 "index": idx,

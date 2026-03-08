@@ -155,105 +155,106 @@ class ScanOrchestrator:
         processed = 0
 
         cap = cv2.VideoCapture(str(video_path))
-        fps = cap.get(cv2.CAP_PROP_FPS) or metadata.fps
-        if not fps or fps <= 0:
-            logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
-            fps = 30.0
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or metadata.fps
+            if not fps or fps <= 0:
+                logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
+                fps = 30.0
 
-        for frame_idx in frame_indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            if not ret:
-                continue
+            for frame_idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
 
-            if scale != 1.0:
-                h, w = frame.shape[:2]
-                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                if scale != 1.0:
+                    h, w = frame.shape[:2]
+                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
 
-            time_ms = int((frame_idx / fps) * 1000)
+                time_ms = int((frame_idx / fps) * 1000)
 
-            # Stage 2: detect text regions in this frame.
-            # Run in a thread pool — EasyOCR is CPU/GPU-bound and would block
-            # the asyncio event loop if called directly in a coroutine.
-            ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
+                # Stage 2: detect text regions in this frame.
+                # Run in a thread pool — EasyOCR is CPU/GPU-bound and would block
+                # the asyncio event loop if called directly in a coroutine.
+                ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
 
-            # If the frame was scaled for OCR, convert bboxes back to source pixel
-            # coordinates so that keyframes, tracking, and the renderer all operate
-            # in the same coordinate space as the original video.
-            if scale != 1.0:
-                from backend.services.ocr_service import BoxResult as _BoxResult
-                ocr_results = [
-                    _BoxResult(
-                        bbox=(
-                            int(r.bbox[0] / scale),
-                            int(r.bbox[1] / scale),
-                            int(r.bbox[2] / scale),
-                            int(r.bbox[3] / scale),
-                        ),
-                        text=r.text,
-                        confidence=r.confidence,
+                # If the frame was scaled for OCR, convert bboxes back to source pixel
+                # coordinates so that keyframes, tracking, and the renderer all operate
+                # in the same coordinate space as the original video.
+                if scale != 1.0:
+                    from backend.services.ocr_service import BoxResult as _BoxResult
+                    ocr_results = [
+                        _BoxResult(
+                            bbox=(
+                                int(r.bbox[0] / scale),
+                                int(r.bbox[1] / scale),
+                                int(r.bbox[2] / scale),
+                                int(r.bbox[3] / scale),
+                            ),
+                            text=r.text,
+                            confidence=r.confidence,
+                        )
+                        for r in ocr_results
+                    ]
+
+                # Stage 3: classify detected text as PII or non-PII
+                candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
+
+                # Stage 3b: face detection (runs on the same frame as OCR)
+                if self._detect_faces:
+                    if self._face_detector is None:
+                        from backend.services.face_detector import FaceDetector
+                        self._face_detector = FaceDetector()
+                    face_threshold = self._classifier._entity_overrides.get(
+                        "face", self._classifier._threshold
                     )
-                    for r in ocr_results
-                ]
+                    face_results = await asyncio.to_thread(
+                        self._face_detector.detect_faces, frame, face_threshold
+                    )
+                    from backend.services.pii_classifier import PiiCandidate
+                    for fx, fy, fw, fh, fconf in face_results:
+                        candidates.append(PiiCandidate(
+                            text="[face]",
+                            pii_type=PiiType.FACE,
+                            confidence=fconf,
+                            bbox=(fx, fy, fw, fh),
+                            source_frame=frame_idx,
+                            source_time_ms=time_ms,
+                        ))
 
-            # Stage 3: classify detected text as PII or non-PII
-            candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
+                all_candidates.extend(candidates)
+                del frame  # release 6–32 MB immediately; don't wait for GC
 
-            # Stage 3b: face detection (runs on the same frame as OCR)
-            if self._detect_faces:
-                if self._face_detector is None:
-                    from backend.services.face_detector import FaceDetector
-                    self._face_detector = FaceDetector()
-                face_threshold = self._classifier._entity_overrides.get(
-                    "face", self._classifier._threshold
-                )
-                face_results = await asyncio.to_thread(
-                    self._face_detector.detect_faces, frame, face_threshold
-                )
-                from backend.services.pii_classifier import PiiCandidate
-                for fx, fy, fw, fh, fconf in face_results:
-                    candidates.append(PiiCandidate(
-                        text="[face]",
-                        pii_type=PiiType.FACE,
-                        confidence=fconf,
-                        bbox=(fx, fy, fw, fh),
-                        source_frame=frame_idx,
-                        source_time_ms=time_ms,
-                    ))
+                processed += 1
 
-            all_candidates.extend(candidates)
-            del frame  # release 6–32 MB immediately; don't wait for GC
+                # Periodically flush PyTorch's CUDA allocator cache to keep VRAM
+                # usage stable across long scans on lower-VRAM GPUs (4–6 GB).
+                if self._use_gpu and processed % 20 == 0:
+                    self._ocr.flush_gpu_cache()
+                self._emit({
+                    "stage": "ocr",
+                    "frame": frame_idx,
+                    "time_ms": time_ms,
+                    "ocr_boxes": len(ocr_results),
+                    "findings_so_far": len(all_candidates),
+                    "progress_pct": int((processed / ocr_frame_count) * 100),
+                    # Bboxes of PII found on this frame — used by the frontend to seek
+                    # the video and draw a live scan preview with censor bars.
+                    "scan_boxes": [
+                        {
+                            "bbox": list(c.bbox),
+                            "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
+                        }
+                        for c in candidates
+                    ],
+                })
 
-            processed += 1
-
-            # Periodically flush PyTorch's CUDA allocator cache to keep VRAM
-            # usage stable across long scans on lower-VRAM GPUs (4–6 GB).
-            if self._use_gpu and processed % 20 == 0:
-                self._ocr.flush_gpu_cache()
-            self._emit({
-                "stage": "ocr",
-                "frame": frame_idx,
-                "time_ms": time_ms,
-                "ocr_boxes": len(ocr_results),
-                "findings_so_far": len(all_candidates),
-                "progress_pct": int((processed / ocr_frame_count) * 100),
-                # Bboxes of PII found on this frame — used by the frontend to seek
-                # the video and draw a live scan preview with censor bars.
-                "scan_boxes": [
-                    {
-                        "bbox": list(c.bbox),
-                        "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
-                    }
-                    for c in candidates
-                ],
-            })
-
-            # Yield to the event loop so that WebSocket messages can be flushed
-            # between frames. Without this, progress updates would only be sent
-            # when the entire scan completes (Python's async scheduler is cooperative).
-            await asyncio.sleep(0)
-
-        cap.release()
+                # Yield to the event loop so that WebSocket messages can be flushed
+                # between frames. Without this, progress updates would only be sent
+                # when the entire scan completes (Python's async scheduler is cooperative).
+                await asyncio.sleep(0)
+        finally:
+            cap.release()
 
         logger.info(
             "OCR complete — %d frames processed, %d total candidates found. "
@@ -269,6 +270,15 @@ class ScanOrchestrator:
                 "(4) Video path wrong or file unreadable.",
                 confidence_threshold,
             )
+            self._emit({
+                "stage": "warning",
+                "code": "no_findings",
+                "message": (
+                    "No PII was detected. This may mean: (1) the video contains no readable text, "
+                    "(2) the confidence threshold is too high, or "
+                    "(3) OCR/NLP models failed to initialize — check the backend logs."
+                ),
+            })
 
         # --- Stage 4: Link per-frame candidates into time-range events ---
         total_candidates = len(all_candidates)
@@ -307,61 +317,61 @@ class ScanOrchestrator:
             self._emit({"stage": "refining", "total_refine_frames": len(refine_frames)})
             refine_candidates = []
             cap2 = cv2.VideoCapture(str(video_path))
+            try:
+                for ri, rf_idx in enumerate(refine_frames):
+                    cap2.set(cv2.CAP_PROP_POS_FRAMES, rf_idx)
+                    ret, frame = cap2.read()
+                    if not ret:
+                        continue
 
-            for ri, rf_idx in enumerate(refine_frames):
-                cap2.set(cv2.CAP_PROP_POS_FRAMES, rf_idx)
-                ret, frame = cap2.read()
-                if not ret:
-                    continue
+                    if scale != 1.0:
+                        h, w = frame.shape[:2]
+                        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
 
-                if scale != 1.0:
-                    h, w = frame.shape[:2]
-                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                    time_ms = int((rf_idx / fps) * 1000)
+                    ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
 
-                time_ms = int((rf_idx / fps) * 1000)
-                ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
+                    if scale != 1.0:
+                        from backend.services.ocr_service import BoxResult as _BoxResult
+                        ocr_results = [
+                            _BoxResult(
+                                bbox=(int(r.bbox[0] / scale), int(r.bbox[1] / scale),
+                                      int(r.bbox[2] / scale), int(r.bbox[3] / scale)),
+                                text=r.text, confidence=r.confidence,
+                            )
+                            for r in ocr_results
+                        ]
 
-                if scale != 1.0:
-                    from backend.services.ocr_service import BoxResult as _BoxResult
-                    ocr_results = [
-                        _BoxResult(
-                            bbox=(int(r.bbox[0] / scale), int(r.bbox[1] / scale),
-                                  int(r.bbox[2] / scale), int(r.bbox[3] / scale)),
-                            text=r.text, confidence=r.confidence,
+                    candidates = self._classifier.classify(ocr_results, rf_idx, time_ms)
+
+                    if self._detect_faces and self._face_detector is not None:
+                        face_threshold = self._classifier._entity_overrides.get(
+                            "face", self._classifier._threshold
                         )
-                        for r in ocr_results
-                    ]
+                        face_results = await asyncio.to_thread(
+                            self._face_detector.detect_faces, frame, face_threshold
+                        )
+                        from backend.services.pii_classifier import PiiCandidate
+                        for fx, fy, fw, fh, fconf in face_results:
+                            candidates.append(PiiCandidate(
+                                text="[face]",
+                                pii_type=PiiType.FACE,
+                                confidence=fconf,
+                                bbox=(fx, fy, fw, fh),
+                                source_frame=rf_idx,
+                                source_time_ms=time_ms,
+                            ))
 
-                candidates = self._classifier.classify(ocr_results, rf_idx, time_ms)
+                    refine_candidates.extend(candidates)
+                    del frame
 
-                if self._detect_faces and self._face_detector is not None:
-                    face_threshold = self._classifier._entity_overrides.get(
-                        "face", self._classifier._threshold
-                    )
-                    face_results = await asyncio.to_thread(
-                        self._face_detector.detect_faces, frame, face_threshold
-                    )
-                    from backend.services.pii_classifier import PiiCandidate
-                    for fx, fy, fw, fh, fconf in face_results:
-                        candidates.append(PiiCandidate(
-                            text="[face]",
-                            pii_type=PiiType.FACE,
-                            confidence=fconf,
-                            bbox=(fx, fy, fw, fh),
-                            source_frame=rf_idx,
-                            source_time_ms=time_ms,
-                        ))
+                    if (ri + 1) % 10 == 0:
+                        pct = int(((ri + 1) / len(refine_frames)) * 100)
+                        self._emit({"stage": "refining", "progress_pct": min(pct, 100)})
 
-                refine_candidates.extend(candidates)
-                del frame
-
-                if (ri + 1) % 10 == 0:
-                    pct = int(((ri + 1) / len(refine_frames)) * 100)
-                    self._emit({"stage": "refining", "progress_pct": min(pct, 100)})
-
-                await asyncio.sleep(0)
-
-            cap2.release()
+                    await asyncio.sleep(0)
+            finally:
+                cap2.release()
 
             if refine_candidates:
                 all_candidates.extend(refine_candidates)

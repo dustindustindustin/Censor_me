@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Loader2, Minus, Pause, Play, Plus } from 'lucide-react'
 import videoBg from '../../assets/video-bg.png'
-import { getProject, importVideo, importVideoFromPath, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
+import { cancelScan, getProject, importVideo, importVideoFromPath, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
 import { useProjectStore } from '../../store/projectStore'
@@ -238,6 +238,17 @@ export function VideoPreview({ videoRef, style }: Props) {
     }
   }
 
+  const handleCancelScan = async () => {
+    if (!scanId) return
+    try {
+      await cancelScan(scanId)
+      setScanId(null)
+      addNotification('Scan cancelled', 'info')
+    } catch (err) {
+      console.error('Cancel scan failed:', err)
+    }
+  }
+
   const handleTimeUpdate = () => {
     if (!videoRef.current) return
     const ms = Math.floor(videoRef.current.currentTime * 1000)
@@ -344,29 +355,42 @@ export function VideoPreview({ videoRef, style }: Props) {
           </button>
 
           {project?.video && (
-            <button
-              className="primary"
-              onClick={handleScan}
-              disabled={isScanPending || isScanRunning}
-            >
-              {isScanPending
-                ? 'Starting\u2026'
-                : isScanRunning
-                ? scanProgress.stage === 'track'
-                  ? `Tracking\u2026 ${scanProgress.progressPct}%`
-                  : scanProgress.stage === 'tracking'
-                  ? 'Tracking\u2026 0%'
-                  : scanProgress.stage === 'linking'
-                  ? `Linking\u2026 ${scanProgress.progressPct}%`
-                  : scanProgress.stage === 'link_done'
-                  ? 'Linking\u2026 100%'
-                  : scanProgress.stage === 'refining'
-                  ? `Refining\u2026 ${scanProgress.progressPct}%`
-                  : scanProgress.stage === 'refine_done'
-                  ? 'Refinement done'
-                  : `Scanning\u2026 ${scanProgress.progressPct}%`
-                : 'Scan for PII'}
-            </button>
+            <>
+              <button
+                className="primary"
+                onClick={handleScan}
+                disabled={isScanPending || isScanRunning}
+              >
+                {isScanPending
+                  ? 'Starting\u2026'
+                  : isScanRunning
+                  ? scanProgress.stage === 'warming_up'
+                    ? 'Loading models\u2026'
+                    : scanProgress.stage === 'track'
+                    ? `Tracking\u2026 ${scanProgress.progressPct}%`
+                    : scanProgress.stage === 'tracking'
+                    ? 'Tracking\u2026 0%'
+                    : scanProgress.stage === 'linking'
+                    ? `Linking\u2026 ${scanProgress.progressPct}%`
+                    : scanProgress.stage === 'link_done'
+                    ? 'Linking\u2026 100%'
+                    : scanProgress.stage === 'refining'
+                    ? `Refining\u2026 ${scanProgress.progressPct}%`
+                    : scanProgress.stage === 'refine_done'
+                    ? 'Refinement done'
+                    : `Scanning\u2026 ${scanProgress.progressPct}%`
+                  : 'Scan for PII'}
+              </button>
+              {isScanRunning && (
+                <button
+                  className="ghost"
+                  onClick={handleCancelScan}
+                  style={{ fontSize: 'var(--font-size-small)', color: 'var(--reject)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)' }}
+                >
+                  Cancel
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -504,6 +528,36 @@ export function VideoPreview({ videoRef, style }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Model warm-up banner (first scan only) */}
+      {isScanRunning && scanProgress.stage === 'warming_up' && (
+        <div style={{
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'rgba(255,171,64,0.12)',
+          borderBottom: '1px solid rgba(255,171,64,0.3)',
+          fontSize: 'var(--font-size-small)',
+          color: 'var(--pending)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--space-2)',
+        }}>
+          <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+          Loading OCR &amp; NLP models (first run only) — this may take 15–30 seconds\u2026
+        </div>
+      )}
+
+      {/* Scan warning banner (no findings / model error) */}
+      {scanProgress.stage === 'warning' && scanProgress.warningMessage && (
+        <div style={{
+          padding: 'var(--space-2) var(--space-3)',
+          background: 'rgba(239,69,101,0.1)',
+          borderBottom: '1px solid rgba(239,69,101,0.3)',
+          fontSize: 'var(--font-size-small)',
+          color: 'var(--reject)',
+        }}>
+          {scanProgress.warningMessage}
+        </div>
+      )}
 
       {/* Scan progress bar */}
       {(isScanPending || isScanRunning) && (

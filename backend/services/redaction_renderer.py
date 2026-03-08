@@ -72,6 +72,9 @@ class RedactionRenderer:
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{source_video.stem}_redacted.mp4"
+        # Write to a temp file; rename atomically on success to prevent serving
+        # a corrupt/partial file if encoding fails or is interrupted mid-way.
+        tmp_path = output_path.with_suffix(".mp4.tmp")
 
         # Get video properties
         cap = cv2.VideoCapture(str(source_video))
@@ -91,7 +94,7 @@ class RedactionRenderer:
 
         ffmpeg_cmd = self._build_ffmpeg_cmd(
             source_video=source_video,
-            output_path=output_path,
+            output_path=tmp_path,
             output_settings=output_settings,
             fps=fps,
             width=out_width,
@@ -182,6 +185,8 @@ class RedactionRenderer:
         stderr = b"".join(stderr_chunks)
 
         if proc.returncode != 0:
+            # Clean up the incomplete temp file before retrying or raising
+            tmp_path.unlink(missing_ok=True)
             # Try CPU fallback if hardware encoder failed
             hw_error_markers = [b"nvenc", b"amf", b"videotoolbox", b"hw_encoder"]
             if use_hw and any(m in stderr.lower() for m in hw_error_markers):
@@ -192,6 +197,8 @@ class RedactionRenderer:
                 )
             raise RuntimeError(f"ffmpeg encoding failed: {stderr.decode()[-2000:]}")
 
+        # Atomically replace the final output path with the completed temp file
+        tmp_path.replace(output_path)
         return output_path
 
     def _build_ffmpeg_cmd(

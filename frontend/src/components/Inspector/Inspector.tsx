@@ -50,6 +50,7 @@ export function Inspector({ style }: Props) {
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
+  const exportStartRef = useRef<number | null>(null)
 
   // Quick Export state
   const [quickExportStatus, setQuickExportStatus] = useState<'idle' | 'scanning' | 'accepting' | 'exporting' | 'done' | 'error'>('idle')
@@ -180,6 +181,7 @@ export function Inspector({ style }: Props) {
   const handleExport = async () => {
     if (!project) return
     resetExport()
+    exportStartRef.current = Date.now()
     try {
       const { export_id } = await startExport(project.project_id)
       trackExport(export_id)
@@ -225,6 +227,7 @@ export function Inspector({ style }: Props) {
       await bulkUpdateEventStatus(project.project_id, 'accepted')
 
       setQuickExportStatus('exporting')
+      exportStartRef.current = Date.now()
       const { export_id } = await startExport(project.project_id)
       trackExport(export_id)
 
@@ -345,6 +348,16 @@ export function Inspector({ style }: Props) {
               {exportProg.totalFrames > 0 && (
                 <span> ({exportProg.currentFrame.toLocaleString()} / {exportProg.totalFrames.toLocaleString()} frames)</span>
               )}
+              {exportProg.pct > 0 && exportStartRef.current !== null && (() => {
+                const startTime = exportStartRef.current!
+                const elapsed = (Date.now() - startTime) / 1000
+                const totalEstSec = elapsed / (exportProg.pct / 100)
+                const remSec = Math.max(0, Math.round(totalEstSec - elapsed))
+                const remStr = remSec >= 60
+                  ? `${Math.floor(remSec / 60)}m ${remSec % 60}s`
+                  : `${remSec}s`
+                return <span style={{ marginLeft: 6, color: 'var(--text-disabled)' }}>&mdash; {remStr} remaining</span>
+              })()}
             </div>
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${exportProg.pct}%` }} />

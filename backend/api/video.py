@@ -8,6 +8,7 @@ GET  /video/proxy/{project_id}        — serve proxy video with range request s
 
 import logging
 from pathlib import Path
+from uuid import UUID
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Request, UploadFile
@@ -26,12 +27,12 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024 * 1024  # 50 GB
 
 
 @router.post("/import/{project_id}")
-async def import_video(project_id: str, file: UploadFile):
+async def import_video(project_id: UUID, file: UploadFile):
     """
     Save uploaded video to project dir, extract metadata, and generate proxy.
     Proxy generation runs synchronously for now (async task queue in v0.2).
     """
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -91,7 +92,7 @@ class ImportPathRequest(BaseModel):
 
 
 @router.post("/import-path/{project_id}")
-async def import_video_from_path(project_id: str, body: ImportPathRequest):
+async def import_video_from_path(project_id: UUID, body: ImportPathRequest):
     """
     Import a video from a local file path (no upload needed).
 
@@ -99,7 +100,7 @@ async def import_video_from_path(project_id: str, body: ImportPathRequest):
     a filesystem path, and this endpoint reads the file directly instead of
     requiring a multipart upload through the browser.
     """
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -131,12 +132,12 @@ async def import_video_from_path(project_id: str, body: ImportPathRequest):
 
 
 @router.get("/proxy/{project_id}")
-async def serve_proxy(project_id: str, request: Request):
+async def serve_proxy(project_id: UUID, request: Request):
     """
     Serve the proxy video with HTTP range request support.
     This allows the browser <video> element to seek without buffering the full file.
     """
-    proj_dir = project_dir(project_id)
+    proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
 

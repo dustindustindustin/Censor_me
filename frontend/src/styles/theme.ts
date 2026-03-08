@@ -27,6 +27,10 @@ export const theme = {
   testFrameFill: 'rgba(0, 220, 255, 0.18)',
   scanPreview: '#ffc800',
   scanPreviewFill: 'rgba(255, 200, 0, 0.22)',
+
+  // Manual redaction overlay (orange)
+  manual: '#FF9800',
+  manualFill: 'rgba(255, 152, 0, 0.22)',
 } as const
 
 /**

@@ -227,6 +227,10 @@ export async function startScan(projectId: string): Promise<{ scan_id: string; r
   return data
 }
 
+export async function cancelScan(scanId: string): Promise<void> {
+  await api.post(`/scan/cancel/${scanId}`)
+}
+
 /**
  * Check whether a scan is currently running for a project.
  *

@@ -51,6 +51,8 @@ interface ScanProgress {
   findingsCount: number
   /** Total OCR frames planned by FrameSampler (for the progress bar denominator). */
   totalOcrFrames: number
+  /** Warning message from the scan pipeline (e.g., no findings, model error). */
+  warningMessage: string | null
 }
 
 export interface Notification {
@@ -211,6 +213,7 @@ const DEFAULT_SCAN_PROGRESS: ScanProgress = {
   progressPct: 0,
   findingsCount: 0,
   totalOcrFrames: 0,
+  warningMessage: null,
 }
 
 export const useProjectStore = create<ProjectStore>((set, get) => ({
@@ -348,7 +351,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       const prev = state.scanProgress
 
       if (event.stage === 'starting') {
-        return { scanProgress: { ...prev, isRunning: true, progressPct: 0, findingsCount: 0, totalOcrFrames: event.total_ocr_frames, stage: 'starting' } }
+        return { scanProgress: { ...prev, isRunning: true, progressPct: 0, findingsCount: 0, totalOcrFrames: event.total_ocr_frames, stage: 'starting', warningMessage: null } }
       }
       if (event.stage === 'ocr') {
         return {
@@ -368,13 +371,19 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
           scanPreviewFrame: { time_ms: event.time_ms, boxes: [] },
         }
       }
+      if (event.stage === 'warning') {
+        return { scanProgress: { ...prev, stage: 'warning', warningMessage: event.message } }
+      }
       if (event.stage === 'done') {
-        return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'done', progressPct: 100, findingsCount: event.total_findings } }
+        return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'done', progressPct: 100, findingsCount: event.total_findings ?? 0 } }
       }
       if (event.stage === 'error') {
         return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'error' } }
       }
-      // All other stages (linking, link_done, tracking, scene_change):
+      if (event.stage === 'cancelled') {
+        return { scanId: null, scanPreviewFrame: null, scanProgress: { ...prev, isRunning: false, stage: 'cancelled' } }
+      }
+      // All other stages (linking, link_done, tracking, scene_change, warming_up):
       // just update the stage label without changing other fields
       return { scanProgress: { ...prev, stage: event.stage } }
     }),
