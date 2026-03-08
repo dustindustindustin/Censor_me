@@ -4,7 +4,8 @@ Called once during FastAPI lifespan startup.
 """
 
 import logging
-import shutil
+
+from backend.utils.ffmpeg_path import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,16 @@ async def initialize_models(gpu_info) -> None:
         return
 
     _check_ffmpeg()
-    await _init_easyocr(gpu_info.cuda_available)
+    await _init_easyocr(gpu_info.gpu_available_for_ocr)
     await _init_presidio()
     logger.info("All models initialized. Ready to accept requests.")
 
 
 def _check_ffmpeg() -> None:
     """Verify ffmpeg is available on PATH or FFMPEG_PATH env var."""
-    import os
-    ffmpeg_path = os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
-    if not ffmpeg_path:
+    import shutil
+    ffmpeg_path = get_ffmpeg_path()
+    if ffmpeg_path == "ffmpeg" and not shutil.which("ffmpeg"):
         raise StartupError(
             "ffmpeg not found. Install ffmpeg and add it to PATH, "
             "or set FFMPEG_PATH in .env. "

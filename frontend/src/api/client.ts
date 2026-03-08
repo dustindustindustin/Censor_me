@@ -1,36 +1,49 @@
 /**
  * Typed API client for the Censor Me backend.
  *
- * All HTTP calls to the FastAPI backend go through this module. Functions
- * return typed responses that match the backend Pydantic models (via the
- * shared types in ``../types``).
- *
- * URL structure:
- *   - REST calls use the ``/api`` prefix (proxied to localhost:8010 by Vite).
- *   - WebSocket calls use the ``/ws`` prefix (proxied to ws://localhost:8010).
- *
- * During development Vite proxies both prefixes to the backend:
- *   /api/* → http://localhost:8010/*  (strips /api)
- *   /ws/*  → ws://localhost:8010/*   (strips /ws)
+ * Supports two modes:
+ *   - **Dev mode** (no Tauri): REST uses ``/api`` prefix (Vite proxy strips it),
+ *     WebSocket uses ``/ws`` prefix (Vite proxy strips it).
+ *   - **Tauri mode**: REST and WebSocket go directly to ``http://127.0.0.1:{port}``.
+ *     The port is obtained from the Tauri IPC ``get_backend_port`` command.
  */
 
 import axios from 'axios'
 import type { FrameTestResult, OutputSettings, Project, RedactionEvent, Rule, ScanSettings, SystemStatus } from '../types'
 
+// ── Dual-mode URL resolution ─────────────────────────────────────────────────
+
+const IS_TAURI = '__TAURI_INTERNALS__' in window
+
+let _port = 8010
+
+/** Called from main.tsx after getting the port from Tauri IPC. */
+export function setBackendPort(p: number) { _port = p }
+
+function apiBase(): string {
+  return IS_TAURI ? `http://127.0.0.1:${_port}` : '/api'
+}
+
+function wsBase(): string {
+  if (IS_TAURI) return `ws://127.0.0.1:${_port}`
+  return window.location.origin.replace(/^http/, 'ws')
+}
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: apiBase(),
   timeout: 30_000,
 })
 
-/**
- * Separate axios instance for the startup status poll with a short timeout.
- * If the backend isn't up yet, we want to fail fast (3s) and retry,
- * rather than hanging for 30s on each attempt.
- */
 const statusApi = axios.create({
-  baseURL: '/api',
+  baseURL: apiBase(),
   timeout: 3_000,
 })
+
+/** Re-initialize axios base URLs after setBackendPort is called. */
+export function reinitAxios() {
+  api.defaults.baseURL = apiBase()
+  statusApi.defaults.baseURL = apiBase()
+}
 
 // ── System ────────────────────────────────────────────────────────────────────
 
@@ -158,7 +171,18 @@ export async function importVideo(projectId: string, file: File): Promise<void> 
  * The backend serves the proxy with HTTP range request support, allowing the
  * browser's <video> element to seek without buffering the full file.
  */
+/**
+ * Import a video from a local file path (Tauri native dialog mode).
+ * Avoids multipart upload — the backend reads the file directly from disk.
+ */
+export async function importVideoFromPath(projectId: string, path: string): Promise<void> {
+  await api.post(`/video/import-path/${projectId}`, { path }, {
+    timeout: 300_000,
+  })
+}
+
 export function proxyVideoUrl(projectId: string): string {
+  if (IS_TAURI) return `http://127.0.0.1:${_port}/video/proxy/${projectId}`
   return `/api/video/proxy/${projectId}`
 }
 
@@ -205,10 +229,9 @@ export async function getActiveScan(
  * @param scanId - The scan ID returned by ``startScan()``.
  */
 export function openScanProgressSocket(scanId: string): WebSocket {
-  // Replace http/https with ws/wss so WebSocket uses the right protocol.
-  // In dev, Vite's /ws proxy forwards this to ws://localhost:8010/scan/progress/{scanId}.
-  const wsBase = window.location.origin.replace(/^http/, 'ws')
-  return new WebSocket(`${wsBase}/ws/scan/progress/${scanId}`)
+  const base = wsBase()
+  if (IS_TAURI) return new WebSocket(`${base}/scan/progress/${scanId}`)
+  return new WebSocket(`${base}/ws/scan/progress/${scanId}`)
 }
 
 /**
@@ -414,8 +437,9 @@ export async function startExport(projectId: string): Promise<{ export_id: strin
  * The connection closes when export is 'done' or 'error'.
  */
 export function openExportProgressSocket(exportId: string): WebSocket {
-  const wsBase = window.location.origin.replace(/^http/, 'ws')
-  return new WebSocket(`${wsBase}/ws/export/progress/${exportId}`)
+  const base = wsBase()
+  if (IS_TAURI) return new WebSocket(`${base}/export/progress/${exportId}`)
+  return new WebSocket(`${base}/ws/export/progress/${exportId}`)
 }
 
 /**
@@ -423,6 +447,7 @@ export function openExportProgressSocket(exportId: string): WebSocket {
  * Use this as an ``<a href>`` download link after export completes.
  */
 export function exportDownloadUrl(projectId: string): string {
+  if (IS_TAURI) return `http://127.0.0.1:${_port}/export/${projectId}/download`
   return `/api/export/${projectId}/download`
 }
 
@@ -441,6 +466,7 @@ export async function getReport(projectId: string, format: 'json' | 'html' = 'js
  * Use as an href or with window.open() for direct browser download.
  */
 export function reportDownloadUrl(projectId: string, format: 'json' | 'html' = 'html'): string {
+  if (IS_TAURI) return `http://127.0.0.1:${_port}/export/${projectId}/report?format=${format}`
   return `/api/export/${projectId}/report?format=${format}`
 }
 
@@ -477,6 +503,7 @@ export async function cancelBatch(batchId: string): Promise<void> {
 
 /** Open a WebSocket for real-time batch progress events. */
 export function openBatchProgressSocket(batchId: string): WebSocket {
-  const wsBase = window.location.origin.replace(/^http/, 'ws')
-  return new WebSocket(`${wsBase}/ws/batch/progress/${batchId}`)
+  const base = wsBase()
+  if (IS_TAURI) return new WebSocket(`${base}/batch/progress/${batchId}`)
+  return new WebSocket(`${base}/ws/batch/progress/${batchId}`)
 }

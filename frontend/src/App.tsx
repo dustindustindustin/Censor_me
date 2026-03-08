@@ -11,6 +11,8 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Layers, Plus, Settings, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
 import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
+import { AboutDialog } from './components/AboutDialog/AboutDialog'
+import { SetupWizard } from './components/SetupWizard/SetupWizard'
 import { BatchPanel } from './components/BatchPanel/BatchPanel'
 import { ToastContainer } from './components/ToastContainer'
 import { FindingsPanel } from './components/FindingsPanel/FindingsPanel'
@@ -26,6 +28,8 @@ export default function App() {
   const [initError, setInitError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showBatch, setShowBatch] = useState(false)
+  const [showAbout, setShowAbout] = useState(false)
+  const [setupNeeded, setSetupNeeded] = useState<null | { gpu_detected: boolean; gpu_vendor: string; gpu_name: string | null }>(null)
   const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
@@ -57,6 +61,22 @@ export default function App() {
           if (status.ready) {
             if (!cancelled) {
               setSystemStatus(status)
+              // Check first-run setup status in Tauri mode
+              if ('__TAURI_INTERNALS__' in window) {
+                try {
+                  const IS_TAURI = true
+                  const base = IS_TAURI ? `http://127.0.0.1:${(window as any).__CENSOR_ME_PORT__ || 8010}` : '/api'
+                  const resp = await fetch(`${base}/system/setup/status`)
+                  const setupStatus = await resp.json()
+                  if (!setupStatus.complete) {
+                    setSetupNeeded({
+                      gpu_detected: setupStatus.gpu_detected,
+                      gpu_vendor: setupStatus.gpu_vendor,
+                      gpu_name: setupStatus.gpu_name,
+                    })
+                  }
+                } catch { /* setup check is best-effort */ }
+              }
             }
             break
           }
@@ -83,6 +103,16 @@ export default function App() {
     document.title = project ? `${project.name} \u2014 Censor Me` : 'Censor Me'
   }, [project?.name])
 
+  // Listen for Tauri tray "About" event
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('show:about', () => setShowAbout(true)).then((fn) => { unlisten = fn })
+    }).catch(() => {})
+    return () => { unlisten?.() }
+  }, [])
+
   if (!systemStatus) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 'var(--space-4)' }}>
@@ -93,6 +123,17 @@ export default function App() {
           <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-body)' }}>{initMessage}</div>
         )}
       </div>
+    )
+  }
+
+  if (setupNeeded) {
+    return (
+      <SetupWizard
+        gpuDetected={setupNeeded.gpu_detected}
+        gpuVendor={setupNeeded.gpu_vendor}
+        gpuName={setupNeeded.gpu_name}
+        onComplete={() => setSetupNeeded(null)}
+      />
     )
   }
 
@@ -190,6 +231,8 @@ export default function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+
+      {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
     </div>
   )
 }

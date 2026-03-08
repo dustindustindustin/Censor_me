@@ -23,6 +23,7 @@ import numpy as np
 
 from backend.models.events import RedactionEvent
 from backend.models.project import OutputSettings
+from backend.utils.ffmpeg_path import get_ffmpeg_path
 from backend.utils.gpu_detect import GpuInfo
 
 logger = logging.getLogger(__name__)
@@ -210,7 +211,7 @@ class RedactionRenderer:
                         "h264_videotoolbox") or None for CPU (libx264).
         """
         cmd = [
-            "ffmpeg", "-y",
+            get_ffmpeg_path(), "-y",
             # Video input: raw BGR frames from stdin
             "-f", "rawvideo",
             "-vcodec", "rawvideo",

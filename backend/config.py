@@ -5,7 +5,27 @@ import os
 from collections import defaultdict
 from pathlib import Path
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", Path.home() / "censor_me_projects"))
+
+def _resolve_projects_dir() -> Path:
+    """Determine the projects directory based on environment configuration.
+
+    In portable mode (``CENSOR_ME_PORTABLE=1``), data lives relative to the app
+    root so the entire folder can be moved without breaking paths. Otherwise,
+    uses the user's home directory (or an explicit ``PROJECTS_DIR`` override).
+    """
+    explicit = os.environ.get("PROJECTS_DIR")
+    if explicit:
+        return Path(explicit)
+
+    if os.environ.get("CENSOR_ME_PORTABLE") == "1":
+        # App root is the parent of the backend/ package directory
+        app_root = Path(__file__).resolve().parent.parent
+        return app_root / "data" / "projects"
+
+    return Path.home() / "censor_me_projects"
+
+
+PROJECTS_DIR = _resolve_projects_dir()
 
 
 def project_dir(project_id: str) -> Path:

@@ -49,7 +49,7 @@ async def submit(body: BatchSubmitRequest, request: Request):
         raise HTTPException(status_code=422, detail="No video paths provided")
 
     gpu_info = getattr(request.app.state, "gpu", None)
-    use_gpu = gpu_info.cuda_available if gpu_info else False
+    use_gpu = gpu_info.gpu_available_for_ocr if gpu_info else False
 
     job = await submit_batch(
         video_paths=body.video_paths,

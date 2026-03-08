@@ -44,8 +44,14 @@ def _get_reader(use_gpu: bool):
     global _reader_instance
     if _reader_instance is None:
         import easyocr
-        _reader_instance = easyocr.Reader(["en"], gpu=use_gpu, verbose=False)
-        device = "GPU (CUDA)" if use_gpu else "CPU"
+        from backend.utils.model_paths import get_easyocr_model_dir
+
+        kwargs: dict = {"lang_list": ["en"], "gpu": use_gpu, "verbose": False}
+        model_dir = get_easyocr_model_dir()
+        if model_dir:
+            kwargs["model_storage_directory"] = model_dir
+        _reader_instance = easyocr.Reader(**kwargs)
+        device = "GPU" if use_gpu else "CPU"
         logger.info(f"EasyOCR reader initialized on {device}")
     return _reader_instance
 
@@ -123,17 +129,20 @@ class OcrService:
     def flush_gpu_cache(self) -> None:
         """Release cached (but unused) GPU memory back to the VRAM pool.
 
-        PyTorch's CUDA allocator retains freed tensors in a pool for fast reuse,
-        which causes VRAM to grow monotonically during long scans. Call this
-        periodically to keep VRAM usage stable. No-op on CPU-only machines.
+        Supports CUDA (NVIDIA), ROCm/HIP (AMD — uses torch.cuda API), and
+        MPS (Apple Metal). No-op on CPU-only machines.
         """
         if not self._use_gpu:
             return
         try:
             import torch
-            torch.cuda.empty_cache()
+            # ROCm uses torch.cuda.empty_cache() via HIP compatibility layer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
         except (ImportError, RuntimeError):
-            pass  # Non-fatal; torch not available or CUDA not initialized
+            pass
 
     def _run_ocr(self, frame: np.ndarray, scale_factor: float = 1.0) -> list[BoxResult]:
         """

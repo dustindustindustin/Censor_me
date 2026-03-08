@@ -40,6 +40,13 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/ws/, ''),
       },
+      // Setup wizard WebSocket → ws://127.0.0.1:8010/system/setup/*
+      '/ws/system': {
+        target: 'ws://127.0.0.1:8010',
+        ws: true,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/ws/, ''),
+      },
     },
   },
 })

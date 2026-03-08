@@ -65,7 +65,7 @@ async def start_scan(project_id: str, request: Request):
 
         # Read GPU availability from app state (set during startup)
         gpu_info = getattr(request.app.state, "gpu", None)
-        use_gpu = gpu_info.cuda_available if gpu_info else False
+        use_gpu = gpu_info.gpu_available_for_ocr if gpu_info else False
 
         scan_id = str(uuid.uuid4())
         _active_scans[scan_id] = {
@@ -188,7 +188,7 @@ async def test_frame(project_id: str, request: Request, frame_index: int = 0):
         )
 
     gpu_info = getattr(request.app.state, "gpu", None)
-    use_gpu = gpu_info.cuda_available if gpu_info else False
+    use_gpu = gpu_info.gpu_available_for_ocr if gpu_info else False
 
     def _run() -> dict:
         from backend.services.ocr_service import OcrService
@@ -403,7 +403,7 @@ async def scan_single_frame(project_id: str, request: Request, frame_index: int 
         raise HTTPException(status_code=422, detail=f"Source video not found: {video_path}")
 
     gpu_info = getattr(request.app.state, "gpu", None)
-    use_gpu = gpu_info.cuda_available if gpu_info else False
+    use_gpu = gpu_info.gpu_available_for_ocr if gpu_info else False
 
     def _run():
         cap = cv2.VideoCapture(str(video_path))
@@ -500,7 +500,7 @@ async def start_range_scan(project_id: str, request: Request, start_ms: int = 0,
         end_frame = int((end_ms / 1000) * fps)
 
         gpu_info = getattr(request.app.state, "gpu", None)
-        use_gpu = gpu_info.cuda_available if gpu_info else False
+        use_gpu = gpu_info.gpu_available_for_ocr if gpu_info else False
 
         scan_id = str(uuid.uuid4())
         _active_scans[scan_id] = {

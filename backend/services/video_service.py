@@ -18,6 +18,7 @@ import cv2
 import ffmpeg
 
 from backend.models.project import VideoMetadata
+from backend.utils.ffmpeg_path import get_ffmpeg_path, get_ffprobe_path
 
 
 class VideoService:
@@ -45,7 +46,7 @@ class VideoService:
             ValueError: If no video stream is found in the file.
             ffmpeg.Error: If ffprobe cannot open or parse the file.
         """
-        probe = ffmpeg.probe(str(video_path))
+        probe = ffmpeg.probe(str(video_path), cmd=get_ffprobe_path())
         video_stream = next(
             (s for s in probe["streams"] if s["codec_type"] == "video"), None
         )
@@ -104,7 +105,7 @@ class VideoService:
                 acodec="aac",
             )
             .overwrite_output()
-            .run(quiet=True)
+            .run(cmd=get_ffmpeg_path(), quiet=True)
         )
 
         return proxy_path

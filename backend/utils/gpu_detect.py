@@ -15,6 +15,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from backend.utils.ffmpeg_path import get_ffmpeg_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,12 +50,21 @@ class GpuInfo:
     nvenc_available: bool
     display_name: str
 
+    @property
+    def gpu_available_for_ocr(self) -> bool:
+        """True if any PyTorch GPU backend is available for EasyOCR inference.
+
+        ROCm uses torch.cuda APIs under the hood (HIP), so easyocr.Reader(gpu=True)
+        works for ROCm already. MPS works with EasyOCR 1.7+.
+        """
+        return self.cuda_available or self.rocm_available or self.mps_available
+
 
 def _check_ffmpeg_encoder(encoder_name: str) -> bool:
     """Return True if ffmpeg has the given encoder compiled in."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+            [get_ffmpeg_path(), "-hide_banner", "-encoders"],
             capture_output=True,
             text=True,
             timeout=10,

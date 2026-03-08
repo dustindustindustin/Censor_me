@@ -1,19 +1,24 @@
 """
 Video import and proxy serving API.
 
-POST /video/import/{project_id}  — import a video file into a project
-GET  /video/proxy/{project_id}   — serve proxy video with range request support
+POST /video/import/{project_id}       — import via multipart upload
+POST /video/import-path/{project_id}  — import from a local file path (Tauri native dialog)
+GET  /video/proxy/{project_id}        — serve proxy video with range request support
 """
 
+import logging
 from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from backend.config import project_dir
 from backend.models.project import ProjectFile, VideoMetadata
 from backend.services.video_service import VideoService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -69,6 +74,50 @@ async def import_video(project_id: str, file: UploadFile):
     proxy_path = svc.generate_proxy(video_path, proj_dir)
 
     # Update project
+    project = ProjectFile.load(proj_dir)
+    project.video = metadata
+    project.proxy_path = str(proxy_path)
+    project.save(proj_dir)
+
+    return {
+        "video_path": str(video_path),
+        "proxy_path": str(proxy_path),
+        "metadata": metadata.model_dump(),
+    }
+
+
+class ImportPathRequest(BaseModel):
+    path: str
+
+
+@router.post("/import-path/{project_id}")
+async def import_video_from_path(project_id: str, body: ImportPathRequest):
+    """
+    Import a video from a local file path (no upload needed).
+
+    Used by the Tauri desktop app with native file dialogs — the dialog returns
+    a filesystem path, and this endpoint reads the file directly instead of
+    requiring a multipart upload through the browser.
+    """
+    proj_dir = project_dir(project_id)
+    if not proj_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    video_path = Path(body.path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
+
+    allowed = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+    if video_path.suffix.lower() not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported format '{video_path.suffix}'. Allowed: {', '.join(allowed)}"
+        )
+
+    svc = VideoService()
+    metadata = svc.get_metadata(video_path)
+    proxy_path = svc.generate_proxy(video_path, proj_dir)
+
     project = ProjectFile.load(proj_dir)
     project.video = metadata
     project.proxy_path = str(proxy_path)
