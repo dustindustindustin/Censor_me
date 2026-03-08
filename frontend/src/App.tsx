@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Layers, Plus, Settings, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
-import { createProject, getActiveScan, getProject, getSystemStatus, listProjects } from './api/client'
+import { createProject, getActiveScan, getProject, getSetupStatus, getSystemStatus, listProjects } from './api/client'
 import { AboutDialog } from './components/AboutDialog/AboutDialog'
 import { SetupWizard } from './components/SetupWizard/SetupWizard'
 import { BatchPanel } from './components/BatchPanel/BatchPanel'
@@ -64,10 +64,7 @@ export default function App() {
               // Check first-run setup status in Tauri mode
               if ('__TAURI_INTERNALS__' in window) {
                 try {
-                  const IS_TAURI = true
-                  const base = IS_TAURI ? `http://127.0.0.1:${(window as any).__CENSOR_ME_PORT__ || 8010}` : '/api'
-                  const resp = await fetch(`${base}/system/setup/status`)
-                  const setupStatus = await resp.json()
+                  const setupStatus = await getSetupStatus()
                   if (!setupStatus.complete) {
                     setSetupNeeded({
                       gpu_detected: setupStatus.gpu_detected,

@@ -67,6 +67,30 @@ export async function getSystemDiagnostics(): Promise<any> {
   return data
 }
 
+export async function getSetupStatus(): Promise<{
+  complete: boolean
+  gpu_detected: boolean
+  gpu_vendor: string
+  gpu_name: string | null
+}> {
+  const { data } = await statusApi.get('/system/setup/status')
+  return data
+}
+
+export async function completeSetup(): Promise<void> {
+  await api.post('/system/setup/complete')
+}
+
+export function openSetupInstallSocket(provider: string): WebSocket {
+  const base = wsBase()
+  if (IS_TAURI) return new WebSocket(`${base}/system/setup/install-gpu?provider=${provider}`)
+  return new WebSocket(`${base}/ws/system/setup/install-gpu?provider=${provider}`)
+}
+
+export async function copyExportTo(projectId: string, destination: string): Promise<void> {
+  await api.post(`/export/${projectId}/copy-to`, { destination })
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 
 /**

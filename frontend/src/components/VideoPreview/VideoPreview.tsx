@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Loader2, Minus, Pause, Play, Plus } from 'lucide-react'
 import videoBg from '../../assets/video-bg.png'
-import { getProject, importVideo, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
+import { getProject, importVideo, importVideoFromPath, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
 import { useKeyboard } from '../../hooks/useKeyboard'
 import { useProjectStore } from '../../store/projectStore'
@@ -146,6 +146,8 @@ export function VideoPreview({ videoRef, style }: Props) {
   const [dragOver, setDragOver] = useState(false)
 
   const VALID_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.avi', '.webm']
+  const IS_TAURI = '__TAURI_INTERNALS__' in window
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const doImport = async (file: File) => {
     if (!project) return
@@ -160,6 +162,38 @@ export function VideoPreview({ videoRef, style }: Props) {
       setImportError(msg)
     } finally {
       setImporting(false)
+    }
+  }
+
+  const doImportFromPath = async (path: string) => {
+    if (!project) return
+    setImportError(null)
+    setImporting(true)
+    try {
+      await importVideoFromPath(project.project_id, path)
+      const updated = await getProject(project.project_id)
+      setProject(updated)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Import failed'
+      setImportError(msg)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleImportClick = async () => {
+    if (importing) return
+    if (IS_TAURI) {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }],
+      })
+      if (typeof selected === 'string') {
+        await doImportFromPath(selected)
+      }
+    } else {
+      fileInputRef.current?.click()
     }
   }
 
@@ -292,29 +326,22 @@ export function VideoPreview({ videoRef, style }: Props) {
       <div style={{ padding: 'var(--space-2) var(--space-3)', background: 'var(--surface)', borderBottom: '1px solid var(--border-hairline)', display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
         {/* Group 1: Import + Scan */}
         <div className="toolbar-group">
-          <label style={{ cursor: importing ? 'wait' : 'pointer' }}>
-            <input
-              type="file"
-              accept=".mp4,.mov,.mkv,.avi,.webm"
-              style={{ display: 'none' }}
-              onChange={handleImport}
-              disabled={importing}
-            />
-            <span style={{
-              display: 'inline-flex', alignItems: 'center',
-              padding: 'var(--space-2) var(--space-4)',
-              minHeight: 36,
-              background: 'var(--glass-bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-md)',
-              fontSize: 'var(--font-size-body)',
-              cursor: importing ? 'wait' : 'pointer',
-              opacity: importing ? 0.5 : 1,
-              transition: 'all var(--transition-fast)',
-            }}>
-              {importing ? 'Importing\u2026' : 'Import Video'}
-            </span>
-          </label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".mp4,.mov,.mkv,.avi,.webm"
+            style={{ display: 'none' }}
+            onChange={handleImport}
+            disabled={importing}
+          />
+          <button
+            className="secondary"
+            onClick={handleImportClick}
+            disabled={importing}
+            style={{ cursor: importing ? 'wait' : 'pointer' }}
+          >
+            {importing ? 'Importing\u2026' : 'Import Video'}
+          </button>
 
           {project?.video && (
             <button

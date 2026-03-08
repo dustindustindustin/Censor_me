@@ -9,11 +9,13 @@ GET  /export/{project_id}/report    — audit report (json or html)
 
 import asyncio
 import logging
+import shutil
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from backend.config import PROJECTS_DIR, project_dir
 from backend.models.project import OutputSettings, ProjectFile
@@ -136,6 +138,26 @@ async def download_export(project_id: str):
         raise HTTPException(status_code=404, detail="No export files found")
 
     return FileResponse(exports[0], media_type="video/mp4", filename=exports[0].name)
+
+
+class _CopyToRequest(BaseModel):
+    destination: str
+
+
+@router.post("/{project_id}/copy-to")
+async def copy_export_to(project_id: str, body: _CopyToRequest):
+    """Copy the latest exported video to a user-chosen path (used by Tauri save dialog)."""
+    proj_dir = project_dir(project_id)
+    exports_dir = proj_dir / "exports"
+    if not exports_dir.exists():
+        raise HTTPException(status_code=404, detail="No exports found")
+    exports = sorted(exports_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not exports:
+        raise HTTPException(status_code=404, detail="No export files found")
+    dest = Path(body.destination)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exports[0], dest)
+    return {"saved_to": str(dest)}
 
 
 @router.get("/{project_id}/report")

@@ -227,6 +227,19 @@ def step_copy_backend() -> None:
     )
 
 
+def step_generate_icons() -> None:
+    """Generate all Tauri icon sizes from the source PNG."""
+    print("\n=== Step 6.5: Generate app icons ===")
+    icon_src = ROOT / "resources" / "Censor Me Icon Cropped.png"
+    if not icon_src.exists():
+        print(f"  WARNING: Icon source not found at {icon_src}, skipping")
+        return
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "generate-icons.py")],
+        check=True,
+    )
+
+
 def step_build_tauri(skip: bool = False) -> None:
     """Build the Tauri desktop binary."""
     print("\n=== Step 7: Build Tauri binary ===")
@@ -303,6 +316,7 @@ def main():
     step_download_ffmpeg(system, machine)
     step_build_frontend()
     step_copy_backend()
+    step_generate_icons()
     step_build_tauri(skip=args.skip_tauri)
     step_create_data_dir()
     archive = step_package(system, machine)

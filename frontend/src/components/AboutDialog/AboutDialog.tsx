@@ -45,7 +45,7 @@ export function AboutDialog({ onClose }: AboutDialogProps) {
         </div>
 
         <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-          <div><strong>Version:</strong> 1.0.0</div>
+          <div><strong>Version:</strong> {__APP_VERSION__}</div>
           {diagnostics?.gpu && (
             <div><strong>GPU:</strong> {diagnostics.gpu.display_name}</div>
           )}

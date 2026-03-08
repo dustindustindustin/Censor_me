@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Cpu, MonitorSmartphone, Zap } from 'lucide-react'
 import logoSrc from '../../assets/logo.svg'
+import { completeSetup, openSetupInstallSocket } from '../../api/client'
 
 interface SetupWizardProps {
   gpuDetected: boolean
@@ -53,14 +54,7 @@ export function SetupWizard({ gpuDetected, gpuVendor, gpuName, onComplete }: Set
     setProgressLines([])
     setError(null)
 
-    const IS_TAURI = '__TAURI_INTERNALS__' in window
-    const port = 8010 // Will be overridden by the actual port in Tauri mode
-    const base = IS_TAURI ? `ws://127.0.0.1:${port}` : window.location.origin.replace(/^http/, 'ws')
-    const wsPath = IS_TAURI
-      ? `${base}/system/setup/install-gpu?provider=${selectedProvider}`
-      : `${base}/ws/system/setup/install-gpu?provider=${selectedProvider}`
-
-    const ws = new WebSocket(wsPath)
+    const ws = openSetupInstallSocket(selectedProvider)
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
@@ -82,9 +76,7 @@ export function SetupWizard({ gpuDetected, gpuVendor, gpuName, onComplete }: Set
 
   const handleComplete = async () => {
     try {
-      const IS_TAURI = '__TAURI_INTERNALS__' in window
-      const base = IS_TAURI ? `http://127.0.0.1:8010` : '/api'
-      await fetch(`${base}/system/setup/complete`, { method: 'POST' })
+      await completeSetup()
     } catch {
       // Non-fatal — worst case the wizard shows again next launch
     }

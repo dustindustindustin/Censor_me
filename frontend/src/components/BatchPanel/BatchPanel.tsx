@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, CheckCircle, Loader, Play, Trash2, XCircle } from 'lucide-react'
+import { ArrowLeft, CheckCircle, FolderOpen, Loader, Play, Trash2, XCircle } from 'lucide-react'
 import {
   cancelBatch,
   getBatchStatus,
@@ -42,6 +42,8 @@ const STATUS_COLORS: Record<string, string> = {
   skipped: 'var(--text-disabled)',
 }
 
+const IS_TAURI = '__TAURI_INTERNALS__' in window
+
 export function BatchPanel({ defaultScanSettings, defaultOutputSettings, onClose }: Props) {
   const [videoPaths, setVideoPaths] = useState<string[]>([])
   const [pathInput, setPathInput] = useState('')
@@ -54,6 +56,19 @@ export function BatchPanel({ defaultScanSettings, defaultOutputSettings, onClose
   const [batchId, setBatchId] = useState<string | null>(null)
   const [batchJob, setBatchJob] = useState<BatchJob | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+
+  const handleBrowse = async () => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }],
+    })
+    if (selected) {
+      const paths = (Array.isArray(selected) ? selected : [selected]) as string[]
+      const newPaths = paths.filter((p) => !videoPaths.includes(p))
+      if (newPaths.length > 0) setVideoPaths((prev) => [...prev, ...newPaths])
+    }
+  }
 
   // Add paths from the input textarea (one per line)
   const handleAddPaths = () => {
@@ -222,9 +237,20 @@ export function BatchPanel({ defaultScanSettings, defaultOutputSettings, onClose
         {!batchId && (
           <>
             <div>
-              <label style={{ display: 'block', fontSize: 'var(--font-size-small)', fontWeight: 500, marginBottom: 'var(--space-1)', color: 'var(--text-muted)' }}>
-                Video file paths (one per line)
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+                <label style={{ fontSize: 'var(--font-size-small)', fontWeight: 500, color: 'var(--text-muted)', flex: 1 }}>
+                  Video file paths (one per line)
+                </label>
+                {IS_TAURI && (
+                  <button
+                    className="secondary"
+                    onClick={handleBrowse}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)', fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-3)', minHeight: 32 }}
+                  >
+                    <FolderOpen size={14} /> Browse…
+                  </button>
+                )}
+              </div>
               <textarea
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}

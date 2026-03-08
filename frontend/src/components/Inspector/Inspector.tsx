@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Check, CircleDot, Redo2, Undo2, X } from 'lucide-react'
-import { bulkUpdateEventStatus, bulkUpdateEventStyle, exportDownloadUrl, openScanProgressSocket, reportDownloadUrl, startExport, startScan, updateEventKeyframes, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
+import { bulkUpdateEventStatus, bulkUpdateEventStyle, copyExportTo, exportDownloadUrl, openScanProgressSocket, reportDownloadUrl, startExport, startScan, updateEventKeyframes, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
 import type { UndoAction } from '../../store/projectStore'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
@@ -157,6 +157,25 @@ export function Inspector({ style }: Props) {
   }
 
   // ── Export handlers ──
+
+  const IS_TAURI = '__TAURI_INTERNALS__' in window
+
+  const handleSaveAs = async () => {
+    if (!project) return
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const dest = await save({
+        defaultPath: 'redacted-video.mp4',
+        filters: [{ name: 'Video', extensions: ['mp4'] }],
+      })
+      if (dest) {
+        await copyExportTo(project.project_id, dest)
+        addNotification('Video saved', 'success')
+      }
+    } catch {
+      addNotification('Save failed', 'error')
+    }
+  }
 
   const handleExport = async () => {
     if (!project) return
@@ -337,13 +356,22 @@ export function Inspector({ style }: Props) {
               <span className="checkmark-animate"><Check size={16} /></span> Export complete
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-              <a
-                href={project ? exportDownloadUrl(project.project_id) : '#'}
-                download
-                style={{ flex: 1, display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
-              >
-                Download Video
-              </a>
+              {IS_TAURI ? (
+                <button
+                  onClick={handleSaveAs}
+                  style={{ flex: 1, padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', border: 'none', cursor: 'pointer', transition: 'all var(--transition-fast)' }}
+                >
+                  Save Video As…
+                </button>
+              ) : (
+                <a
+                  href={project ? exportDownloadUrl(project.project_id) : '#'}
+                  download
+                  style={{ flex: 1, display: 'block', padding: 'var(--space-2) var(--space-3)', background: 'var(--accept)', color: '#fff', borderRadius: 'var(--radius-md)', textAlign: 'center', fontSize: 'var(--font-size-body)', textDecoration: 'none', transition: 'all var(--transition-fast)' }}
+                >
+                  Download Video
+                </a>
+              )}
               <a
                 href={project ? reportDownloadUrl(project.project_id, 'html') : '#'}
                 target="_blank"
