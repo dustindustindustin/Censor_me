@@ -110,6 +110,33 @@ export function Inspector({ style }: Props) {
     }
   }, [])
 
+  // ── Style helpers ──
+
+  /** True when two styles are identical (used to detect per-finding overrides). */
+  const stylesMatch = (a: RedactionStyle, b: RedactionStyle): boolean =>
+    a.type === b.type && a.strength === b.strength && a.color === b.color
+
+  /** The current project default style as an object (for comparison). */
+  const currentGlobal = (): RedactionStyle => ({ type: globalType, strength: globalStrength, color: globalColor })
+
+  /**
+   * Returns all events that still match the given style (i.e., have NOT been
+   * individually customized). Used to filter bulk global updates.
+   */
+  const nonCustomizedIds = (matchStyle: RedactionStyle): string[] =>
+    events.filter((e) => stylesMatch(e.redaction_style, matchStyle)).map((e) => e.event_id)
+
+  /**
+   * Returns all events that share the same extracted_text as the given event.
+   * When extracted_text is null (manual boxes), returns only the given event.
+   * This is the "style group" — changing one changes all occurrences of that PII value.
+   */
+  const getStyleGroup = (forEvent: typeof event): NonNullable<typeof event>[] => {
+    if (!forEvent) return []
+    if (!forEvent.extracted_text) return [forEvent]
+    return events.filter((e) => e.extracted_text === forEvent.extracted_text)
+  }
+
   // ── Global style handlers ──
 
   const saveDefaultStyle = (style: RedactionStyle) => {
@@ -121,44 +148,43 @@ export function Inspector({ style }: Props) {
 
   const handleGlobalType = (type: RedactionStyleType) => {
     if (!project) return
+    const oldGlobal = currentGlobal()
     const newStyle: RedactionStyle = { type, strength: globalStrength, color: globalColor }
     setGlobalType(type)
     saveDefaultStyle(newStyle)
-    if (events.length > 0) {
-      bulkUpdateStyleLocal(newStyle)
-      bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
+    // Only update events that still match the OLD global (unmodified by per-finding overrides)
+    const ids = nonCustomizedIds(oldGlobal)
+    if (ids.length > 0) {
+      bulkUpdateStyleLocal(newStyle, ids)
+      bulkUpdateEventStyle(project.project_id, newStyle, ids).catch(console.error)
     }
   }
 
   const handleGlobalStrength = (value: number) => {
     if (!project) return
+    const oldGlobal = currentGlobal()
     const newStyle: RedactionStyle = { type: globalType, strength: value, color: globalColor }
     setGlobalStrength(value)
-    if (events.length > 0) {
-      bulkUpdateStyleLocal(newStyle)
-    }
+    const ids = nonCustomizedIds(oldGlobal)
+    if (ids.length > 0) bulkUpdateStyleLocal(newStyle, ids)
     if (globalStrengthTimer.current) clearTimeout(globalStrengthTimer.current)
     globalStrengthTimer.current = setTimeout(() => {
       saveDefaultStyle(newStyle)
-      if (events.length > 0) {
-        bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
-      }
+      if (ids.length > 0) bulkUpdateEventStyle(project.project_id, newStyle, ids).catch(console.error)
     }, 400)
   }
 
   const handleGlobalColor = (color: string) => {
     if (!project) return
+    const oldGlobal = currentGlobal()
     const newStyle: RedactionStyle = { type: globalType, strength: globalStrength, color }
     setGlobalColor(color)
-    if (events.length > 0) {
-      bulkUpdateStyleLocal(newStyle)
-    }
+    const ids = nonCustomizedIds(oldGlobal)
+    if (ids.length > 0) bulkUpdateStyleLocal(newStyle, ids)
     if (globalColorTimer.current) clearTimeout(globalColorTimer.current)
     globalColorTimer.current = setTimeout(() => {
       saveDefaultStyle(newStyle)
-      if (events.length > 0) {
-        bulkUpdateEventStyle(project.project_id, newStyle).catch(console.error)
-      }
+      if (ids.length > 0) bulkUpdateEventStyle(project.project_id, newStyle, ids).catch(console.error)
     }, 400)
   }
 
@@ -266,48 +292,71 @@ export function Inspector({ style }: Props) {
     await updateEventStatus(project.project_id, event.event_id, status)
   }
 
-  const applyStyle = async (newStyle: RedactionStyle) => {
+  /**
+   * Apply a new style to all events in the same style group as the current event
+   * (all events with the same extracted_text). Records a bulk_style undo action.
+   */
+  const applyGroupStyle = async (newStyle: RedactionStyle, beforeStyles: Map<string, RedactionStyle>) => {
     if (!project || !event) return
-    updateEvent({ ...event, redaction_style: newStyle })
+    const group = getStyleGroup(event)
+    const groupIds = group.map((e) => e.event_id)
+    pushUndo({ type: 'bulk_style', eventIds: groupIds, before: beforeStyles, after: { style: newStyle } })
+    bulkUpdateStyleLocal(newStyle, groupIds)
     try {
-      await updateEventStyle(project.project_id, event.event_id, newStyle)
+      await bulkUpdateEventStyle(project.project_id, newStyle, groupIds)
     } catch (err) {
       console.error('Failed to save style:', err)
       addNotification('Failed to save style', 'error')
-      updateEvent(event)
     }
   }
 
   const handleStyleType = (type: RedactionStyleType) => {
-    if (!event) return
-    pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...event.redaction_style } }, after: { style: { ...event.redaction_style, type } } })
-    applyStyle({ ...event.redaction_style, type })
+    if (!project || !event) return
+    const group = getStyleGroup(event)
+    const beforeStyles = new Map(group.map((e) => [e.event_id, { ...e.redaction_style }]))
+    const newStyle = { ...event.redaction_style, type }
+    applyGroupStyle(newStyle, beforeStyles).catch(console.error)
   }
 
   const handleStrength = (value: number) => {
     if (!project || !event) return
-    // Record undo with the style as it was before any drag adjustments in this batch
-    const currentEvents = useProjectStore.getState().events
-    const currentEvent = currentEvents.find((e) => e.event_id === event.event_id)
-    const oldStyle = currentEvent?.redaction_style ?? event.redaction_style
+    const group = getStyleGroup(event)
+    // Capture before-styles at the start of this drag batch (before any optimistic update)
+    const currentEventsSnap = useProjectStore.getState().events
+    const beforeStyles = new Map(
+      group.map((e) => [e.event_id, { ...(currentEventsSnap.find((ce) => ce.event_id === e.event_id)?.redaction_style ?? e.redaction_style) }])
+    )
     const newStyle = { ...event.redaction_style, strength: value }
-    updateEvent({ ...event, redaction_style: newStyle })
+    group.forEach((e) => updateEvent({ ...e, redaction_style: newStyle }))
     if (strengthTimer.current) clearTimeout(strengthTimer.current)
     strengthTimer.current = setTimeout(() => {
-      pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...oldStyle } }, after: { style: newStyle } })
-      updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
+      const groupIds = group.map((e) => e.event_id)
+      pushUndo({ type: 'bulk_style', eventIds: groupIds, before: beforeStyles, after: { style: newStyle } })
+      bulkUpdateEventStyle(project.project_id, newStyle, groupIds).catch(console.error)
     }, 400)
   }
 
   const handleColor = (color: string) => {
     if (!project || !event) return
+    const group = getStyleGroup(event)
+    const beforeStyles = new Map(group.map((e) => [e.event_id, { ...e.redaction_style }]))
     const newStyle = { ...event.redaction_style, color }
-    updateEvent({ ...event, redaction_style: newStyle })
+    group.forEach((e) => updateEvent({ ...e, redaction_style: newStyle }))
     if (colorTimer.current) clearTimeout(colorTimer.current)
     colorTimer.current = setTimeout(() => {
-      pushUndo({ type: 'style', eventId: event.event_id, before: { style: { ...event.redaction_style } }, after: { style: newStyle } })
-      updateEventStyle(project.project_id, event.event_id, newStyle).catch(console.error)
+      const groupIds = group.map((e) => e.event_id)
+      pushUndo({ type: 'bulk_style', eventIds: groupIds, before: beforeStyles, after: { style: newStyle } })
+      bulkUpdateEventStyle(project.project_id, newStyle, groupIds).catch(console.error)
     }, 400)
+  }
+
+  /** Reset the selected finding's style group back to the project default. */
+  const handleResetToDefault = () => {
+    if (!project || !event) return
+    const group = getStyleGroup(event)
+    const beforeStyles = new Map(group.map((e) => [e.event_id, { ...e.redaction_style }]))
+    const defaultStyle = currentGlobal()
+    applyGroupStyle(defaultStyle, beforeStyles).catch(console.error)
   }
 
   const persistUndoRedo = async (pid: string, action: UndoAction, snapshot: 'before' | 'after') => {
@@ -476,12 +525,20 @@ export function Inspector({ style }: Props) {
         )}
       </div>
 
-      {/* Global censor bar style — applies to all events */}
+      {/* Global censor bar style — applies to all non-customized events */}
       {events.length > 0 && (
         <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
           <div className="section-header">
-            <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Censor Bar Style</span>
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>\u2014 all {events.length} bar{events.length !== 1 ? 's' : ''}</span>
+            <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Project Default Style</span>
+            {(() => {
+              const affected = nonCustomizedIds(currentGlobal()).length
+              const custom = events.length - affected
+              return (
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+                  {affected} of {events.length}{custom > 0 ? ` (${custom} custom)` : ''}
+                </span>
+              )
+            })()}
           </div>
 
           <StyleControls
@@ -492,7 +549,7 @@ export function Inspector({ style }: Props) {
           />
 
           <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)', fontStyle: 'italic' }}>
-            Select a finding below to override its style individually
+            Select a finding to override its style. Custom styles are preserved when the default changes.
           </div>
         </div>
       )}
@@ -537,21 +594,59 @@ export function Inspector({ style }: Props) {
             <span style={{ fontSize: 'var(--font-size-small)' }}>{event.source} \u00b7 {event.tracking_method}</span>
           </Field>
 
-          <Field label="Style (this finding)">
-            <StyleControls
-              style={event.redaction_style}
-              onTypeChange={handleStyleType}
-              onStrengthChange={handleStrength}
-              onColorChange={handleColor}
-            />
-            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-2)', fontStyle: 'italic' }}>
-              {event.redaction_style.type === 'blur'
-                ? 'Gaussian blur applied to the region. Higher radius = stronger obscuring.'
-                : event.redaction_style.type === 'pixelate'
-                ? 'Mosaic pixelation. Higher block size = larger, more visible pixels.'
-                : 'Opaque filled rectangle. No underlying content visible.'}
-            </div>
-          </Field>
+          {(() => {
+            const group = getStyleGroup(event)
+            const isCustom = !stylesMatch(event.redaction_style, currentGlobal())
+            const groupCount = group.length
+            return (
+              <Field label="Style (this finding)">
+                {/* Header row: custom badge + instance count + reset link */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)', flexWrap: 'wrap' }}>
+                  {isCustom ? (
+                    <span style={{
+                      fontSize: 'var(--font-size-xs)', fontWeight: 600,
+                      background: 'var(--accent-tint)', color: 'var(--accent)',
+                      padding: '1px 6px', borderRadius: 'var(--radius-sm)',
+                    }}>
+                      Custom style
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-disabled)' }}>
+                      Using project default
+                    </span>
+                  )}
+                  {groupCount > 1 && (
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
+                      · applies to all {groupCount} occurrences of this text
+                    </span>
+                  )}
+                  {isCustom && (
+                    <button
+                      className="ghost"
+                      onClick={handleResetToDefault}
+                      style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', padding: '1px var(--space-2)', minHeight: 'auto', marginLeft: 'auto' }}
+                    >
+                      Reset to default
+                    </button>
+                  )}
+                </div>
+
+                <StyleControls
+                  style={event.redaction_style}
+                  onTypeChange={handleStyleType}
+                  onStrengthChange={handleStrength}
+                  onColorChange={handleColor}
+                />
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-2)', fontStyle: 'italic' }}>
+                  {event.redaction_style.type === 'blur'
+                    ? 'Gaussian blur applied to the region. Higher radius = stronger obscuring.'
+                    : event.redaction_style.type === 'pixelate'
+                    ? 'Mosaic pixelation. Higher block size = larger, more visible pixels.'
+                    : 'Opaque filled rectangle. No underlying content visible.'}
+                </div>
+              </Field>
+            )
+          })()}
 
           <Field label="Status">
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
