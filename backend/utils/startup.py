@@ -62,16 +62,29 @@ async def _init_presidio() -> None:
     """Initialize Microsoft Presidio + spaCy NER model."""
     try:
         from presidio_analyzer import AnalyzerEngine
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+        from backend.utils.model_paths import get_spacy_model_path
+
         logger.info("Initializing Presidio analyzer…")
-        _analyzer = AnalyzerEngine()
+        model_path = get_spacy_model_path()
+        if model_path:
+            logger.info("Using explicit spaCy model path: %s", model_path)
+            config = {
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": model_path}],
+            }
+            provider = NlpEngineProvider(nlp_configuration=config)
+            _analyzer = AnalyzerEngine(nlp_engine=provider.create_engine())
+        else:
+            _analyzer = AnalyzerEngine()
         logger.info("Presidio initialized.")
     except ImportError:
         raise StartupError("presidio-analyzer not installed. Run: uv pip install presidio-analyzer")
     except OSError as e:
         if "en_core_web" in str(e):
             raise StartupError(
-                "spaCy model missing. Presidio will auto-download en_core_web_lg on first run "
-                "if pip is available in the venv. Ensure pip is installed: "
-                "VIRTUAL_ENV='.venv' uv pip install pip"
+                "spaCy model 'en_core_web_lg' not found. "
+                "Run: python -m spacy download en_core_web_lg"
             )
         raise

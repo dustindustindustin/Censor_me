@@ -14,6 +14,7 @@ Output:
 """
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -28,13 +29,45 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 BUILD_DIR = DIST / "CensorMe"
 
-# python-build-standalone release tag and filenames
-PBS_TAG = "20241201"
-PBS_URLS = {
-    ("Windows", "AMD64"): f"https://github.com/indygreg/python-build-standalone/releases/download/{PBS_TAG}/cpython-3.12.8+{PBS_TAG}-x86_64-pc-windows-msvc-install_only.tar.gz",
-    ("Darwin", "arm64"): f"https://github.com/indygreg/python-build-standalone/releases/download/{PBS_TAG}/cpython-3.12.8+{PBS_TAG}-aarch64-apple-darwin-install_only.tar.gz",
-    ("Linux", "x86_64"): f"https://github.com/indygreg/python-build-standalone/releases/download/{PBS_TAG}/cpython-3.12.8+{PBS_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz",
+# Suffix of the install_only asset for each platform in python-build-standalone
+_PBS_SUFFIXES = {
+    ("Windows", "AMD64"): "x86_64-pc-windows-msvc-install_only.tar.gz",
+    ("Darwin", "arm64"):  "aarch64-apple-darwin-install_only.tar.gz",
+    ("Linux",  "x86_64"): "x86_64-unknown-linux-gnu-install_only.tar.gz",
 }
+
+
+def get_python_standalone_url(system: str, machine: str) -> str:
+    """Return a download URL for the latest CPython 3.12 install_only build."""
+    key = (system, machine)
+    if key not in _PBS_SUFFIXES:
+        print(f"  ERROR: No standalone Python build for {system}/{machine}")
+        sys.exit(1)
+    suffix = _PBS_SUFFIXES[key]
+
+    # Try to resolve the latest release from the astral-sh maintained fork
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest",
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "censor-me-build"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        for asset in data.get("assets", []):
+            name = asset["name"]
+            if "cpython-3.12" in name and suffix in name:
+                url = asset["browser_download_url"]
+                print(f"  Resolved latest python-build-standalone: {name}")
+                return url
+    except Exception as exc:
+        print(f"  WARNING: GitHub API lookup failed ({exc}), trying fallback URL")
+
+    # Hard-coded fallback — update tag/version if this goes stale
+    tag, ver = "20250317", "3.12.9"
+    return (
+        f"https://github.com/astral-sh/python-build-standalone/releases/download"
+        f"/{tag}/cpython-{ver}+{tag}-{suffix}"
+    )
 
 # Static ffmpeg binaries
 FFMPEG_URLS = {
@@ -76,14 +109,10 @@ def extract_archive(archive: Path, dest: Path) -> None:
 def step_download_python(system: str, machine: str) -> Path:
     """Download and extract standalone Python."""
     print("\n=== Step 1: Standalone Python ===")
-    key = (system, machine)
-    if key not in PBS_URLS:
-        print(f"  ERROR: No standalone Python build for {system}/{machine}")
-        sys.exit(1)
-
     cache_dir = DIST / "cache"
     archive = cache_dir / f"python-{system}-{machine}.tar.gz"
-    download(PBS_URLS[key], archive, "python-build-standalone")
+    url = get_python_standalone_url(system, machine)
+    download(url, archive, "python-build-standalone")
 
     python_dir = BUILD_DIR / "python"
     if python_dir.exists():
@@ -120,14 +149,9 @@ def step_install_deps(python_dir: Path, system: str) -> None:
          "--index-url", "https://download.pytorch.org/whl/cpu"],
         check=True,
     )
+    # Install all project dependencies (torch already installed above, pip will skip it)
     subprocess.run(
-        [str(pip), "-m", "pip", "install", "-r", str(ROOT / "pyproject.toml"),
-         "--no-deps"],
-        check=True,
-    )
-    # Install from the project itself
-    subprocess.run(
-        [str(pip), "-m", "pip", "install", str(ROOT), "--no-deps"],
+        [str(pip), "-m", "pip", "install", str(ROOT)],
         check=True,
     )
 
@@ -152,16 +176,13 @@ def step_download_models(python_dir: Path, system: str, skip: bool = False) -> N
     easyocr_dir.mkdir(exist_ok=True)
     subprocess.run(
         [str(python), "-c",
-         f"import easyocr; easyocr.Reader(['en'], gpu=False, model_storage_directory='{easyocr_dir}')"],
+         f"import easyocr; easyocr.Reader(['en'], gpu=False, model_storage_directory=r'{easyocr_dir.as_posix()}')"],
         check=True,
     )
 
-    # spaCy model
-    spacy_dir = models_dir / "spacy"
-    spacy_dir.mkdir(exist_ok=True)
+    # spaCy model — install into site-packages so spacy.load() can find it
     subprocess.run(
-        [str(python), "-m", "spacy", "download", "en_core_web_lg",
-         "--target", str(spacy_dir)],
+        [str(python), "-m", "spacy", "download", "en_core_web_lg"],
         check=True,
     )
 
@@ -205,13 +226,17 @@ def step_download_ffmpeg(system: str, machine: str) -> None:
 def step_build_frontend() -> None:
     """Build the React frontend."""
     print("\n=== Step 5: Build frontend ===")
+    # On Windows, pnpm is a .cmd script and requires shell=True to be found
+    is_windows = platform.system() == "Windows"
     subprocess.run(
         ["pnpm", "--prefix", str(ROOT / "frontend"), "install"],
         check=True,
+        shell=is_windows,
     )
     subprocess.run(
         ["pnpm", "--prefix", str(ROOT / "frontend"), "build"],
         check=True,
+        shell=is_windows,
     )
 
 

@@ -84,7 +84,7 @@ export default function App() {
             setInitMessage('Waiting for backend to start\u2026')
           }
           if (attempts > 30) {
-            setInitError('Backend not responding. Make sure uvicorn is running on port 8010.')
+            setInitError('Backend is not responding. Try restarting the app.')
             break
           }
         }

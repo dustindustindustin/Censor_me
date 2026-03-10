@@ -30,6 +30,7 @@ const GPU_OPTIONS: GpuOption[] = [
 export function SetupWizard({ gpuDetected, gpuVendor, gpuName, onComplete }: SetupWizardProps) {
   const [step, setStep] = useState<Step>('welcome')
   const [selectedProvider, setSelectedProvider] = useState<string>('')
+  const [installedProvider, setInstalledProvider] = useState<string>('')
   const [progressLines, setProgressLines] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
@@ -63,6 +64,7 @@ export function SetupWizard({ gpuDetected, gpuVendor, gpuName, onComplete }: Set
       } else if (data.stage === 'installing' || data.stage === 'installed' || data.stage === 'skip') {
         setProgressLines((prev) => [...prev, data.message])
       } else if (data.stage === 'done') {
+        setInstalledProvider(selectedProvider)
         setStep('complete')
       } else if (data.stage === 'error') {
         setError(data.message)
@@ -206,13 +208,29 @@ export function SetupWizard({ gpuDetected, gpuVendor, gpuName, onComplete }: Set
           <h2 style={{ fontSize: 'var(--font-size-lg)', marginBottom: 'var(--space-3)' }}>
             Setup Complete
           </h2>
-          <p style={{ color: 'var(--text-muted)', marginBottom: 'var(--space-6)' }}>
-            GPU acceleration is ready. You can start processing videos now.
-          </p>
-          <button className="primary" onClick={handleComplete}
-            style={{ padding: 'var(--space-3) var(--space-8)' }}>
-            Get Started
-          </button>
+          {installedProvider !== 'cpu' && installedProvider !== 'mps' && installedProvider !== '' ? (
+            <>
+              <p style={{ color: 'var(--text-muted)', marginBottom: 'var(--space-6)' }}>
+                CUDA has been installed successfully.{' '}
+                <strong>Restart Censor Me</strong> to activate GPU acceleration.
+                The app will use CPU until restarted.
+              </p>
+              <button className="primary" onClick={handleComplete}
+                style={{ padding: 'var(--space-3) var(--space-8)' }}>
+                Restart Later
+              </button>
+            </>
+          ) : (
+            <>
+              <p style={{ color: 'var(--text-muted)', marginBottom: 'var(--space-6)' }}>
+                GPU acceleration is ready. You can start processing videos now.
+              </p>
+              <button className="primary" onClick={handleComplete}
+                style={{ padding: 'var(--space-3) var(--space-8)' }}>
+                Get Started
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -23,9 +23,6 @@ dependencies = [
     # Note: also run `uv pip install pip` in the venv so Presidio can auto-download
     # en_core_web_lg (~400 MB) on first startup. No manual spacy download needed.
 
-    # Pin chardet to the version range requests 2.x supports (chardet 7+ causes a warning)
-    "chardet>=3.0.2,<4",
-
     # Scene detection
     "scenedetect>=0.6.0",
 

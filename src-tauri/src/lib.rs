@@ -12,6 +12,10 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 struct BackendState {
     process: Option<Child>,
     port: u16,
+    /// Job Object handle (Windows only). Kept alive so Windows auto-kills Python
+    /// when the Tauri process exits for any reason (panic, Task Manager, etc.).
+    /// `None` on non-Windows platforms.
+    job_handle: Option<isize>,
 }
 
 /// Find a free TCP port starting from `start`.
@@ -51,7 +55,14 @@ fn ffmpeg_path() -> PathBuf {
 }
 
 /// Spawn the Python backend as a child process.
-fn spawn_backend(port: u16) -> Child {
+///
+/// On Windows, the child is assigned to a Job Object with
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so that Python is automatically
+/// terminated whenever the Tauri process exits — including panics or kills.
+/// Returns `(Child, Option<isize>)` where the second value is the Job Object
+/// handle on Windows (must be kept alive in `BackendState`), or `None` on
+/// other platforms.
+fn spawn_backend(port: u16) -> (Child, Option<isize>) {
     let root = app_root();
     let python = python_path();
     let ffmpeg = ffmpeg_path();
@@ -86,8 +97,42 @@ fn spawn_backend(port: u16) -> Child {
         cmd.creation_flags(creation_flags);
     }
 
-    cmd.spawn()
-        .unwrap_or_else(|e| panic!("Failed to spawn Python backend: {e}\nPython path: {python:?}"))
+    let child = cmd
+        .spawn()
+        .unwrap_or_else(|e| panic!("Failed to spawn Python backend: {e}\nPython path: {python:?}"));
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+
+        let job_handle = unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if !job.is_null() {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE);
+                Some(job as isize)
+            } else {
+                None
+            }
+        };
+        return (child, job_handle);
+    }
+
+    #[allow(unreachable_code)]
+    (child, None)
 }
 
 /// Poll the backend health endpoint until it responds with 200.
@@ -154,11 +199,12 @@ fn get_backend_port(state: tauri::State<'_, Mutex<BackendState>>) -> u16 {
 
 pub fn run() {
     let port = find_free_port(8010);
-    let child = spawn_backend(port);
+    let (child, job_handle) = spawn_backend(port);
 
     let backend_state = Mutex::new(BackendState {
         process: Some(child),
         port,
+        job_handle,
     });
 
     tauri::Builder::default()
@@ -174,7 +220,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(backend_state)
         .invoke_handler(tauri::generate_handler![get_backend_port])
-        .setup(|app| {
+        .setup(move |app| {
             // Build system tray
             let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
             let about = MenuItemBuilder::with_id("about", "About Censor Me").build(app)?;
@@ -243,6 +289,16 @@ pub fn run() {
                 } if label == "main" => {
                     let state = app.state::<Mutex<BackendState>>();
                     shutdown_backend(&state);
+                }
+                RunEvent::WindowEvent {
+                    label,
+                    event: WindowEvent::CloseRequested { .. },
+                    ..
+                } if label == "splash" => {
+                    // User force-closed the splash during loading — exit cleanly
+                    let state = app.state::<Mutex<BackendState>>();
+                    shutdown_backend(&state);
+                    app.exit(0);
                 }
                 RunEvent::ExitRequested { .. } => {
                     let state = app.state::<Mutex<BackendState>>();

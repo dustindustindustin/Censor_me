@@ -36,6 +36,10 @@ desktop.ini
 *.swp
 *.swo
 
+# Tauri / Rust build artifacts
+src-tauri/target/
+src-tauri/gen/
+
 # Logs
 *.log
 frontend/.vite/

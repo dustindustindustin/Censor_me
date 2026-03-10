@@ -74,12 +74,18 @@ def _check_ffmpeg_encoder(encoder_name: str) -> bool:
         return False
 
 
-def _detect_nvidia() -> tuple[bool, str | None, str | None]:
+def _detect_nvidia() -> tuple[bool, bool, str | None, str | None]:
     """Check for NVIDIA GPU via nvidia-smi and CUDA toolkit via nvcc.
 
-    Returns (cuda_available, gpu_name, cuda_version).
+    Returns (nvidia_hw_found, cuda_torch_ready, gpu_name, cuda_version).
+
+    ``nvidia_hw_found`` is True whenever nvidia-smi exits 0 — independent of
+    whether the bundled PyTorch has CUDA support compiled in.
+    ``cuda_torch_ready`` is True only when both nvidia_hw_found AND
+    torch.cuda.is_available().
     """
-    cuda_available = False
+    nvidia_hw_found = False
+    cuda_torch_ready = False
     gpu_name = None
     cuda_version = None
 
@@ -94,30 +100,30 @@ def _detect_nvidia() -> tuple[bool, str | None, str | None]:
         if result.returncode == 0 and result.stdout.strip():
             parts = result.stdout.strip().split(", ")
             gpu_name = parts[0].strip()
-            cuda_available = True
+            nvidia_hw_found = True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
     # Verify PyTorch can actually use CUDA (not just driver present)
-    if cuda_available:
+    if nvidia_hw_found:
         try:
             import torch
             if not torch.cuda.is_available():
-                cuda_available = False
                 logger.warning(
                     "nvidia-smi detected a GPU but torch.cuda.is_available() returned False. "
                     "PyTorch was likely installed without CUDA support. "
                     "Run scripts/install-pytorch to fix this."
                 )
-            # Check if this is actually ROCm masquerading as CUDA
             elif getattr(torch.version, "hip", None):
                 # ROCm HIP backend — not real NVIDIA CUDA
-                cuda_available = False
+                pass
+            else:
+                cuda_torch_ready = True
         except ImportError:
             pass
 
-    # CUDA toolkit version via nvcc
-    if cuda_available:
+    # CUDA toolkit version via nvcc (only relevant when torch CUDA is ready)
+    if cuda_torch_ready:
         try:
             result = subprocess.run(
                 ["nvcc", "--version"],
@@ -133,7 +139,7 @@ def _detect_nvidia() -> tuple[bool, str | None, str | None]:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
-    return cuda_available, gpu_name, cuda_version
+    return nvidia_hw_found, cuda_torch_ready, gpu_name, cuda_version
 
 
 def _detect_apple_mps() -> tuple[bool, str | None]:
@@ -271,8 +277,8 @@ def detect_gpu() -> GpuInfo:
     """
 
     # --- 1. Try NVIDIA ---
-    cuda_available, nvidia_name, cuda_version = _detect_nvidia()
-    if cuda_available:
+    nvidia_hw_found, cuda_torch_ready, nvidia_name, cuda_version = _detect_nvidia()
+    if cuda_torch_ready:
         hw_encoder = "h264_nvenc" if _check_ffmpeg_encoder("h264_nvenc") else None
         display = f"GPU: {nvidia_name}" if nvidia_name else "GPU: NVIDIA"
         logger.info("GPU detected: NVIDIA — %s (CUDA %s, encoder=%s)",
@@ -287,6 +293,22 @@ def detect_gpu() -> GpuInfo:
             directml_available=False,
             hw_encoder=hw_encoder,
             nvenc_available=hw_encoder == "h264_nvenc",
+            display_name=display,
+        )
+    elif nvidia_hw_found:
+        hw_encoder = "h264_nvenc" if _check_ffmpeg_encoder("h264_nvenc") else None
+        display = f"GPU: {nvidia_name} (CUDA not installed)" if nvidia_name else "GPU: NVIDIA (CUDA not installed)"
+        logger.info("NVIDIA GPU found but CUDA torch not installed: %s", nvidia_name)
+        return GpuInfo(
+            gpu_vendor="nvidia",
+            gpu_name=nvidia_name,
+            cuda_available=False,
+            cuda_version=None,
+            mps_available=False,
+            rocm_available=False,
+            directml_available=False,
+            hw_encoder=hw_encoder,
+            nvenc_available=False,
             display_name=display,
         )
 
