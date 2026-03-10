@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ChevronRight, Layers, Plus, Settings, Trash2, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
-import { createProject, deleteProject, getActiveScan, getProject, getSetupStatus, getSystemStatus, listProjects, renameProject } from './api/client'
+import { createProject, deleteProject, getActiveExport, getActiveScan, getProject, getSetupStatus, getSystemStatus, listProjects, renameProject } from './api/client'
 import { AboutDialog } from './components/AboutDialog/AboutDialog'
 import { SetupWizard } from './components/SetupWizard/SetupWizard'
 import { BatchPanel } from './components/BatchPanel/BatchPanel'
@@ -36,12 +36,17 @@ export default function App() {
   const [draftName, setDraftName] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const [setupNeeded, setSetupNeeded] = useState<null | { gpu_detected: boolean; gpu_vendor: string; gpu_name: string | null }>(null)
-  const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
+  const { project, setProject, clearProject, setScanId, setExportId, scanProgress, exportId } = useProjectStore((s) => ({
     project: s.project,
     setProject: s.setProject,
     clearProject: s.clearProject,
     setScanId: s.setScanId,
+    setExportId: s.setExportId,
+    scanProgress: s.scanProgress,
+    exportId: s.exportId,
   }))
+
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false)
 
   const handleRenameProject = async () => {
     const name = draftName.trim()
@@ -70,16 +75,40 @@ export default function App() {
     }
   }
 
-  // Wrapper around setProject that also reconnects to any in-progress scan.
+  // Wrapper around setProject that also reconnects to any in-progress scan or export.
   // Called when the user opens a project from the selector — handles the case
-  // where they navigated away mid-scan and need to reattach to the WebSocket.
+  // where they navigated away mid-scan/export and need to reattach to the WebSocket.
   const handleOpenProject = async (p: Project) => {
     setProject(p)
-    const active = await getActiveScan(p.project_id)
-    if (active) {
-      setScanId(active.scan_id)
+    // Reconnect scan (runs concurrently with export check)
+    const [activeScan, activeExport] = await Promise.all([
+      getActiveScan(p.project_id),
+      getActiveExport(p.project_id),
+    ])
+    if (activeScan) setScanId(activeScan.scan_id)
+    if (activeExport) setExportId(activeExport.export_id)
+  }
+
+  // Guard navigation away from an active project during scan or export.
+  const isWorkActive = scanProgress.isRunning || exportId !== null
+  const handleBackToProjects = () => {
+    if (isWorkActive) {
+      setShowLeaveConfirm(true)
+    } else {
+      clearProject()
     }
   }
+
+  // Warn on browser tab close / refresh while work is active.
+  useEffect(() => {
+    if (!isWorkActive) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [isWorkActive])
   const videoRef = useRef<HTMLVideoElement>(null)
 
   // Poll backend until ready (models downloaded and initialized)
@@ -220,7 +249,7 @@ export default function App() {
       }}>
         <button
           className="ghost"
-          onClick={clearProject}
+          onClick={handleBackToProjects}
           title="Back to project list"
           style={{ padding: 'var(--space-1) var(--space-2)', minHeight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)', fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}
         >
@@ -340,6 +369,45 @@ export default function App() {
                 }}
               >
                 <Trash2 size={14} /> {deleting ? 'Deleting\u2026' : 'Delete Project'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leave confirmation modal — shown when navigating away during scan/export */}
+      {showLeaveConfirm && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowLeaveConfirm(false) }}
+        >
+          <div className="glass" style={{
+            width: 420, padding: 'var(--space-6)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-elevated)',
+            display: 'flex', flexDirection: 'column', gap: 'var(--space-4)',
+          }}>
+            <div style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>
+              {scanProgress.isRunning ? 'Scan in progress' : 'Export in progress'}
+            </div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              {scanProgress.isRunning
+                ? 'A scan is currently running. It will continue in the background — you can come back to this project and it will reconnect automatically.'
+                : 'An export is currently encoding. It will continue in the background — you can come back to this project and it will reconnect automatically.'}
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+              <button className="secondary" onClick={() => setShowLeaveConfirm(false)}>
+                Stay here
+              </button>
+              <button
+                className="primary"
+                onClick={() => { setShowLeaveConfirm(false); clearProject() }}
+              >
+                Leave project
               </button>
             </div>
           </div>

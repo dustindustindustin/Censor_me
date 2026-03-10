@@ -27,8 +27,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# In-memory export progress registry
+# In-memory export progress registry (export_id → progress dict)
 _active_exports: dict[str, dict] = {}
+
+# Track the active export per project so the frontend can reconnect after
+# navigation or page refresh (mirrors _scanning_projects in scan.py)
+_exporting_projects: dict[str, str] = {}  # project_id → export_id
 
 
 @router.post("/{project_id}")
@@ -68,6 +72,7 @@ async def start_export(
         "output_path": None,
         "error": None,
     }
+    _exporting_projects[pid] = export_id
 
     asyncio.create_task(
         _run_export(export_id, project, proj_dir, accepted_events, gpu_info)
@@ -124,6 +129,30 @@ async def get_export_status(project_id: UUID, export_id: str):
     if export_id not in _active_exports:
         raise HTTPException(status_code=404, detail="Export not found")
     return _active_exports[export_id]
+
+
+@router.get("/{project_id}/active")
+async def get_active_export(project_id: UUID):
+    """
+    Check whether an export is currently running for a project.
+
+    Returns the export_id and current progress if one is in-flight, or 404
+    if no export is running. Used by the frontend to reconnect to an export
+    WebSocket after the user navigates away and comes back.
+    """
+    pid = str(project_id)
+    export_id = _exporting_projects.get(pid)
+    if not export_id or export_id not in _active_exports:
+        raise HTTPException(status_code=404, detail="No active export")
+    e = _active_exports[export_id]
+    if e["status"] != "running":
+        raise HTTPException(status_code=404, detail="No active export")
+    return {
+        "export_id": export_id,
+        "status": e["status"],
+        "current_frame": e["current_frame"],
+        "total_frames": e["total_frames"],
+    }
 
 
 @router.get("/{project_id}/download")
@@ -243,3 +272,6 @@ async def _run_export(
         logger.exception("Export %s failed: %s", export_id, e)
         export["status"] = "error"
         export["error"] = str(e)
+    finally:
+        # Remove from the per-project tracking so getActiveExport returns 404
+        _exporting_projects.pop(export["project_id"], None)

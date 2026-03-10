@@ -30,7 +30,7 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
 }
 
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, removeEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification, pushUndo, canUndo, canRedo, undo, redo } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, removeEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification, pushUndo, canUndo, canRedo, undo, redo, exportId, setExportId } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
@@ -48,6 +48,8 @@ export function Inspector({ style }: Props) {
     canRedo: s.canRedo,
     undo: s.undo,
     redo: s.redo,
+    exportId: s.exportId,
+    setExportId: s.setExportId,
   }))
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
@@ -94,6 +96,22 @@ export function Inspector({ style }: Props) {
       setGlobalColor(s.color)
     }
   }, [project?.project_id, project?.scan_settings?.default_redaction_style])
+
+  // Reconnect to an in-progress export when the component mounts (e.g., after
+  // navigating to the project list and back). App.tsx sets exportId in the store
+  // when it detects an active export via getActiveExport() on project open.
+  useEffect(() => {
+    if (exportId) track(exportId)
+  }, []) // intentionally only runs on mount
+
+  // Keep the store's exportId in sync with export lifecycle:
+  // - Set when a new export starts (see handleExport / handleQuickExport below)
+  // - Cleared when the export completes or errors
+  useEffect(() => {
+    if (exportProg.outputPath !== null || exportProg.error !== null) {
+      setExportId(null)
+    }
+  }, [exportProg.outputPath, exportProg.error])
 
   useEffect(() => {
     setShowDeleteFinding(false)
@@ -215,6 +233,7 @@ export function Inspector({ style }: Props) {
     exportStartRef.current = Date.now()
     try {
       const { export_id } = await startExport(project.project_id)
+      setExportId(export_id)
       trackExport(export_id)
     } catch (err: unknown) {
       console.error('Export failed to start:', err)
@@ -260,6 +279,7 @@ export function Inspector({ style }: Props) {
       setQuickExportStatus('exporting')
       exportStartRef.current = Date.now()
       const { export_id } = await startExport(project.project_id)
+      setExportId(export_id)
       trackExport(export_id)
 
       setQuickExportStatus('done')

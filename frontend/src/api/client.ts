@@ -463,6 +463,23 @@ export async function deleteCustomPreset(presetId: string): Promise<void> {
 // ── Export ────────────────────────────────────────────────────────────────────
 
 /**
+ * Check whether an export is currently running for a project.
+ *
+ * Returns the active export's id and progress, or null if no export is running.
+ * Used when re-opening a project to auto-reconnect to an in-progress export.
+ */
+export async function getActiveExport(
+  projectId: string,
+): Promise<{ export_id: string; status: string; current_frame: number; total_frames: number } | null> {
+  try {
+    const { data } = await api.get(`/export/${projectId}/active`)
+    return data
+  } catch {
+    return null  // 404 means no active export — not an error
+  }
+}
+
+/**
  * Start exporting the redacted video for a project.
  *
  * Only accepted events are included. Returns an ``export_id`` immediately.

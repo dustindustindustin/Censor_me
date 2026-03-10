@@ -186,6 +186,14 @@ interface ProjectStore {
   scanId: string | null
   setScanId: (id: string | null) => void
 
+  /**
+   * The export_id of the in-flight export, or null when idle.
+   * Persists across navigation (project list → back) so Inspector can reconnect
+   * to the WebSocket and resume displaying progress.
+   */
+  exportId: string | null
+  setExportId: (id: string | null) => void
+
   // ── Scan progress ───────────────────────────────────────────────────────────
 
   /** Real-time scan pipeline progress, fed by the useScanProgress hook. */
@@ -243,6 +251,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     drawingMode: false,
     staticDrawMode: false,
     scanId: null,
+    exportId: null,
     scanProgress: DEFAULT_SCAN_PROGRESS,
     undoStack: [],
     redoStack: [],
@@ -365,6 +374,9 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     // Reset progress when clearing the scan (scan completed or errored)
     scanProgress: id === null ? DEFAULT_SCAN_PROGRESS : s.scanProgress,
   })),
+
+  exportId: null,
+  setExportId: (id) => set({ exportId: id }),
 
   // ── Scan progress ───────────────────────────────────────────────────────────
 
