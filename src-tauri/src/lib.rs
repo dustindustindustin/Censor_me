@@ -135,7 +135,11 @@ fn spawn_backend(port: u16) -> (Child, Option<isize>) {
     (child, None)
 }
 
-/// Poll the backend health endpoint until it responds with 200.
+/// Poll the backend until it accepts connections, then hand off to the React app.
+///
+/// Returns true as soon as the backend responds with any 200 — even if ready=false.
+/// Model loading progress is shown in the React loading screen, not the splash.
+/// Polls every 500ms for up to 120 attempts (60 seconds) to handle first-run model downloads.
 async fn wait_for_backend(port: u16, app: &AppHandle) -> bool {
     let url = format!("http://127.0.0.1:{port}/system/status");
     let client = reqwest::Client::builder()
@@ -143,17 +147,17 @@ async fn wait_for_backend(port: u16, app: &AppHandle) -> bool {
         .build()
         .unwrap();
 
-    for i in 0..60 {
+    for i in 0..120 {
         let status_msg = match i {
-            0..=2 => "Starting backend...",
-            3..=10 => "Loading models...",
-            11..=30 => "Initializing (this may take a moment)...",
-            _ => "Still waiting for backend...",
+            0..=4 => "Starting backend...",
+            5..=15 => "Loading models...",
+            _ => "Still initializing...",
         };
         let _ = app.emit("splash:status", status_msg);
 
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
+                // Backend is accepting connections — React handles model loading UI from here
                 let _ = app.emit("splash:status", "Ready!");
                 return true;
             }

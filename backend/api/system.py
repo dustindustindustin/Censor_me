@@ -23,10 +23,15 @@ async def get_system_status(request: Request):
     """
     Returns hardware and model initialization status.
     Frontend polls this on startup until ready=true.
+    While models are loading, ready=false and stage indicates current phase:
+      "starting" | "loading_ocr" | "loading_nlp" | "ready" | "error"
     """
     gpu = getattr(request.app.state, "gpu", None)
+    ready = getattr(request.app.state, "ready", False)
+    stage = getattr(request.app.state, "init_stage", "starting")
     return {
-        "ready": True,
+        "ready": ready,
+        "stage": stage,
         "gpu": {
             "gpu_vendor": gpu.gpu_vendor if gpu else "none",
             "gpu_name": gpu.gpu_name if gpu else None,

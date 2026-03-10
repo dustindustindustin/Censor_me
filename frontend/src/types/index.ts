@@ -163,6 +163,8 @@ export interface GpuInfo {
  */
 export interface SystemStatus {
   ready: boolean
+  /** Current initialization stage while ready=false */
+  stage?: 'starting' | 'loading_ocr' | 'loading_nlp' | 'ready' | 'error'
   gpu: GpuInfo
 }
 

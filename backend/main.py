@@ -3,11 +3,12 @@ Censor Me — FastAPI Backend Entry Point
 
 Startup sequence:
 1. Detect GPU/CUDA availability
-2. Verify ffmpeg on PATH
-3. Lazy-initialize EasyOCR + Presidio models on first scan (SKIP_MODEL_INIT=1 default)
-4. Mount API routers
+2. Start accepting requests immediately (server is up)
+3. Initialize EasyOCR + Presidio in a background thread (non-blocking)
+4. /system/status returns ready=false with stage while models load
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -23,16 +24,34 @@ from backend.utils.startup import initialize_models
 logger = logging.getLogger(__name__)
 
 
+async def _init_models_background(app: FastAPI) -> None:
+    """Initialize models in background so the server can accept requests immediately."""
+    try:
+        await initialize_models(app.state.gpu, app.state)
+        app.state.ready = True
+        app.state.init_stage = "ready"
+        logger.info("All models initialized. Ready to accept requests.")
+    except Exception as e:
+        app.state.init_stage = "error"
+        app.state.init_error = str(e)
+        logger.error("Model initialization failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run startup checks and model initialization before accepting requests."""
+    """Detect GPU, then yield immediately so the server starts accepting requests.
+    Model initialization runs in a background task — poll /system/status for ready=true."""
     gpu_info = detect_gpu()
     app.state.gpu = gpu_info
+    app.state.ready = False
+    app.state.init_stage = "starting"
+    app.state.init_error = None
 
-    await initialize_models(gpu_info)
+    init_task = asyncio.create_task(_init_models_background(app))
 
     yield
 
+    init_task.cancel()
     logger.info("Backend shutting down cleanly")
 
 

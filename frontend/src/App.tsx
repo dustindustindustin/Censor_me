@@ -139,7 +139,12 @@ export default function App() {
             }
             break
           }
-          setInitMessage('Initializing models\u2026')
+          const stageMessages: Record<string, string> = {
+            loading_ocr: 'Loading OCR model\u2026',
+            loading_nlp: 'Loading NLP model\u2026',
+            error: 'Backend initialization failed.',
+          }
+          setInitMessage(stageMessages[status.stage ?? ''] ?? 'Initializing models\u2026')
         } catch {
           attempts++
           if (attempts > 5) {
