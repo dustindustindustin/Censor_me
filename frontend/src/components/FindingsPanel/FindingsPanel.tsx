@@ -2,28 +2,37 @@
  * FindingsPanel — left pane of the three-pane layout.
  *
  * Displays all RedactionEvents detected in the current project, with controls
- * to filter by PII type and status, sort by time or confidence, and
- * accept/reject individual findings.
+ * to filter by PII type and status, sort by time or confidence, group duplicate
+ * findings by text, and accept/reject/reset individual or grouped findings.
  */
 
-import React, { useCallback, useMemo, useState } from 'react'
-import { CircleDot, FilterX } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight, CircleDot, FilterX, Layers } from 'lucide-react'
 import { bulkUpdateEventStatus, updateEventStatus } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import type { EventStatus, PiiType, RedactionEvent } from '../../types'
 import { formatMs } from '../../utils/format'
 
-/** Props for the FindingsPanel component. */
 interface Props {
-  /** Optional inline style overrides (e.g., width, flexShrink). */
   style?: React.CSSProperties
 }
 
-/** All valid PII types for the filter dropdown. */
 const PII_TYPES: PiiType[] = [
   'phone', 'email', 'person', 'address', 'credit_card',
   'ssn', 'account_id', 'employee_id', 'postal_code', 'username', 'face', 'custom', 'manual', 'unknown',
 ]
+
+// Group key: pii_type + normalized extracted_text so "Dustin" at time 0:01 and 0:05 share a group
+const groupKey = (e: RedactionEvent) =>
+  `${e.pii_type}::${(e.extracted_text ?? '').toLowerCase().trim()}`
+
+type GroupStatus = EventStatus | 'mixed'
+
+function getGroupStatus(events: RedactionEvent[]): GroupStatus {
+  const statuses = new Set(events.map((e) => e.status))
+  if (statuses.size === 1) return events[0].status
+  return 'mixed'
+}
 
 export function FindingsPanel({ style }: Props) {
   const {
@@ -43,12 +52,12 @@ export function FindingsPanel({ style }: Props) {
     pushUndo: s.pushUndo,
   }))
 
-  // Filter and sort state — local to this component (not persisted to project)
   const [filterType, setFilterType] = useState<PiiType | 'all'>('all')
   const [filterStatus, setFilterStatus] = useState<EventStatus | 'all'>('all')
   const [sortBy, setSortBy] = useState<'time' | 'confidence'>('time')
+  const [groupByText, setGroupByText] = useState(true)
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
 
-  // Memoize filter + sort to avoid re-computing on every render
   const filtered = useMemo(() =>
     events
       .filter((e) => filterType === 'all' || e.pii_type === filterType)
@@ -61,6 +70,30 @@ export function FindingsPanel({ style }: Props) {
     [events, filterType, filterStatus, sortBy],
   )
 
+  const groups = useMemo(() => {
+    if (!groupByText) return null
+    const map = new Map<string, RedactionEvent[]>()
+    for (const e of filtered) {
+      const key = groupKey(e)
+      const list = map.get(key) ?? []
+      list.push(e)
+      map.set(key, list)
+    }
+    return [...map.entries()].map(([key, evts]) => ({ key, events: evts }))
+  }, [filtered, groupByText])
+
+  // Auto-expand the group that contains the currently selected event
+  useEffect(() => {
+    if (!selectedEventId || !groupByText) return
+    const ev = events.find((e) => e.event_id === selectedEventId)
+    if (!ev) return
+    const key = groupKey(ev)
+    setExpandedGroups((prev) => {
+      if (prev.has(key)) return prev
+      return new Set([...prev, key])
+    })
+  }, [selectedEventId, groupByText, events])
+
   const handleStatus = useCallback(async (e: RedactionEvent, status: EventStatus) => {
     if (!project) return
     pushUndo({ type: 'status', eventId: e.event_id, before: { status: e.status }, after: { status } })
@@ -68,15 +101,24 @@ export function FindingsPanel({ style }: Props) {
     await updateEventStatus(project.project_id, e.event_id, status)
   }, [project, updateLocal, pushUndo])
 
+  const handleGroupStatus = useCallback(async (groupEvents: RedactionEvent[], status: EventStatus) => {
+    if (!project) return
+    const ids = groupEvents.map((e) => e.event_id)
+    const beforeMap = new Map(groupEvents.map((e) => [e.event_id, e.status]))
+    pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status } })
+    bulkUpdateLocal(status, ids)
+    await bulkUpdateEventStatus(project.project_id, status, ids)
+  }, [project, bulkUpdateLocal, pushUndo])
+
   const handleAcceptAll = async () => {
     if (!project) return
     const pendingEvents = filtered.filter((e) => e.status === 'pending')
     if (pendingEvents.length === 0) return
-    const pendingIds = pendingEvents.map((e) => e.event_id)
+    const ids = pendingEvents.map((e) => e.event_id)
     const beforeMap = new Map(pendingEvents.map((e) => [e.event_id, e.status]))
-    pushUndo({ type: 'bulk_status', eventIds: pendingIds, before: beforeMap, after: { status: 'accepted' } })
-    bulkUpdateLocal('accepted', pendingIds)
-    await bulkUpdateEventStatus(project.project_id, 'accepted', pendingIds)
+    pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status: 'accepted' } })
+    bulkUpdateLocal('accepted', ids)
+    await bulkUpdateEventStatus(project.project_id, 'accepted', ids)
   }
 
   const handleRejectAll = async () => {
@@ -89,12 +131,31 @@ export function FindingsPanel({ style }: Props) {
     await bulkUpdateEventStatus(project.project_id, 'rejected', ids)
   }
 
+  const toggleGroup = (key: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+
+  const pendingCount = events.filter((e) => e.status === 'pending').length
+  const acceptedCount = events.filter((e) => e.status === 'accepted').length
+  const rejectedCount = events.filter((e) => e.status === 'rejected').length
+
+  const groupCount = groups?.length ?? filtered.length
+  const countLabel = groupByText && groups && groupCount !== filtered.length
+    ? `${filtered.length} · ${groupCount} group${groupCount !== 1 ? 's' : ''}`
+    : `${filtered.length}`
+
   return (
     <div className="glass" style={{ display: 'flex', flexDirection: 'column', borderRadius: 0, ...style }}>
-      {/* ── Filters and sort controls ── */}
+      {/* ── Header ── */}
       <div style={{ padding: 'var(--space-4)', borderBottom: '1px solid var(--border-hairline)' }}>
         <div className="section-header" style={{ paddingBottom: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
-          <span style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>Findings ({filtered.length})</span>
+          <span style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>
+            Findings <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 'var(--font-size-small)' }}>({countLabel})</span>
+          </span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-1)' }}>
             <button
               className="accept"
@@ -131,7 +192,6 @@ export function FindingsPanel({ style }: Props) {
         </select>
 
         <div style={{ display: 'flex', gap: 'var(--space-2)', minWidth: 0 }}>
-          {/* Status filter */}
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value as EventStatus | 'all')}
@@ -144,7 +204,6 @@ export function FindingsPanel({ style }: Props) {
             <option value="rejected">Rejected</option>
           </select>
 
-          {/* Sort order */}
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'time' | 'confidence')}
@@ -155,9 +214,31 @@ export function FindingsPanel({ style }: Props) {
             <option value="confidence">By confidence</option>
           </select>
         </div>
+
+        {/* Status breakdown */}
+        {events.length > 0 && (
+          <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)' }}>
+            <span style={{ color: 'var(--pending)' }}>● {pendingCount} pending</span>
+            <span style={{ color: 'var(--accept)' }}>✓ {acceptedCount} accepted</span>
+            <span style={{ color: 'var(--reject)' }}>✕ {rejectedCount} rejected</span>
+          </div>
+        )}
+
+        {/* Group toggle */}
+        <div style={{ marginTop: 'var(--space-2)', display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            className="ghost toolbar-toggle"
+            data-active={groupByText}
+            onClick={() => setGroupByText((v) => !v)}
+            style={{ fontSize: 'var(--font-size-xs)', minHeight: 'auto', padding: 'var(--space-1) var(--space-2)', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)' }}
+            title={groupByText ? 'Show as flat list' : 'Group duplicate findings together'}
+          >
+            <Layers size={12} /> Group duplicates
+          </button>
+        </div>
       </div>
 
-      {/* ── Scrollable event list ── */}
+      {/* ── Scrollable list ── */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {filtered.length === 0 && (
           <div style={{ padding: 'var(--space-6)', color: 'var(--text-muted)', textAlign: 'center', fontSize: 'var(--font-size-body)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
@@ -172,32 +253,260 @@ export function FindingsPanel({ style }: Props) {
             </div>
           </div>
         )}
-        {filtered.map((event) => (
-          <FindingItem
-            key={event.event_id}
-            event={event}
-            selected={selectedEventId === event.event_id}
-            onSelect={() => selectEvent(event.event_id)}
-            onAccept={() => handleStatus(event, 'accepted')}
-            onReject={() => handleStatus(event, 'rejected')}
-          />
-        ))}
+
+        {groupByText && groups ? (
+          groups.map(({ key, events: groupEvents }) => (
+            <FindingGroup
+              key={key}
+              events={groupEvents}
+              selectedEventId={selectedEventId}
+              isExpanded={groupEvents.length === 1 || expandedGroups.has(key)}
+              onToggleExpand={() => toggleGroup(key)}
+              onSelect={selectEvent}
+              onStatusChange={handleStatus}
+              onGroupStatus={(status) => handleGroupStatus(groupEvents, status)}
+            />
+          ))
+        ) : (
+          filtered.map((event) => (
+            <FindingItem
+              key={event.event_id}
+              event={event}
+              selected={selectedEventId === event.event_id}
+              onSelect={() => selectEvent(event.event_id)}
+              onStatusChange={(status) => handleStatus(event, status)}
+            />
+          ))
+        )}
       </div>
     </div>
   )
 }
 
-// ── FindingItem ───────────────────────────────────────────────────────────────
+// ── FindingGroup ──────────────────────────────────────────────────────────────
+
+interface FindingGroupProps {
+  events: RedactionEvent[]
+  selectedEventId: string | null
+  isExpanded: boolean
+  onToggleExpand: () => void
+  onSelect: (id: string) => void
+  onStatusChange: (event: RedactionEvent, status: EventStatus) => void
+  onGroupStatus: (status: EventStatus) => void
+}
+
+const FindingGroup = React.memo(function FindingGroup({
+  events, selectedEventId, isExpanded, onToggleExpand, onSelect, onStatusChange, onGroupStatus,
+}: FindingGroupProps) {
+  const rep = events[0]
+  const isMulti = events.length > 1
+  const groupSt = getGroupStatus(events)
+  const anySelected = events.some((e) => e.event_id === selectedEventId)
+
+  const statusColor =
+    groupSt === 'accepted' ? 'var(--accept)'
+    : groupSt === 'rejected' ? 'var(--reject)'
+    : 'var(--pending)'
+
+  const statusLabel =
+    groupSt === 'mixed'
+      ? `${events.filter((e) => e.status === 'accepted').length}/${events.length} accepted`
+      : groupSt
+
+  return (
+    <div style={{ borderBottom: '1px solid var(--border-hairline)' }}>
+      {/* Group header row */}
+      <div
+        className="finding-item"
+        data-selected={anySelected}
+        onClick={() => isMulti ? onToggleExpand() : onSelect(rep.event_id)}
+        style={{ borderBottom: 'none', cursor: 'pointer' }}
+      >
+        {/* Top row: chevron + type tag + count + status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
+          {isMulti && (
+            <span style={{ color: 'var(--text-muted)', flexShrink: 0, lineHeight: 1 }}>
+              {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+            </span>
+          )}
+          <span className={`tag ${rep.pii_type}`}>{rep.pii_type}</span>
+          {isMulti && (
+            <span style={{
+              fontSize: 'var(--font-size-xs)', fontWeight: 600,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)', padding: '0 5px', color: 'var(--text-muted)',
+            }}>
+              ×{events.length}
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', color: statusColor, fontWeight: 500 }}>
+            {statusLabel}
+          </span>
+        </div>
+
+        {/* Detected text */}
+        <div style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', marginBottom: 'var(--space-1)', color: 'var(--text)' }}>
+          {rep.extracted_text ?? '(text not stored)'}
+        </div>
+
+        {/* For single-event groups: show the time range inline */}
+        {!isMulti && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-1)' }}>
+            <span>{formatMs(rep.time_ranges[0]?.start_ms ?? 0)} – {formatMs(rep.time_ranges[rep.time_ranges.length - 1]?.end_ms ?? 0)}</span>
+            <span>{Math.round(rep.confidence * 100)}%</span>
+            <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', padding: '1px 5px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+              {rep.redaction_style.type === 'solid_box' ? 'box' : rep.redaction_style.type}
+            </span>
+          </div>
+        )}
+
+        {/* Group action buttons — always visible */}
+        <div style={{ display: 'flex', gap: 'var(--space-1)', marginTop: 'var(--space-1)' }} onClick={(e) => e.stopPropagation()}>
+          <button
+            className="accept"
+            onClick={() => onGroupStatus('accepted')}
+            style={{ flex: 1, fontSize: 'var(--font-size-xs)', padding: '3px 6px', minHeight: 26, opacity: groupSt === 'accepted' ? 1 : 0.65 }}
+          >
+            {isMulti ? 'Accept All' : (groupSt === 'accepted' ? '✓ Accepted' : 'Accept')}
+          </button>
+          <button
+            onClick={() => onGroupStatus('pending')}
+            style={{
+              flex: 1, fontSize: 'var(--font-size-xs)', padding: '3px 6px', minHeight: 26,
+              background: 'var(--glass-bg)',
+              color: groupSt === 'pending' || groupSt === 'mixed' ? 'var(--pending)' : 'var(--text-muted)',
+              border: `1px solid ${groupSt === 'pending' || groupSt === 'mixed' ? 'var(--pending)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-md)', cursor: 'pointer',
+              opacity: groupSt === 'pending' ? 1 : 0.65,
+            }}
+          >
+            {groupSt === 'pending' ? '● Pending' : 'Reset'}
+          </button>
+          <button
+            className="reject"
+            onClick={() => onGroupStatus('rejected')}
+            style={{ flex: 1, fontSize: 'var(--font-size-xs)', padding: '3px 6px', minHeight: 26, opacity: groupSt === 'rejected' ? 1 : 0.65 }}
+          >
+            {isMulti ? 'Reject All' : (groupSt === 'rejected' ? '✕ Rejected' : 'Reject')}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded individual instances (multi-event groups only) */}
+      {isMulti && isExpanded && events.map((event, idx) => (
+        <GroupInstanceItem
+          key={event.event_id}
+          event={event}
+          selected={selectedEventId === event.event_id}
+          isLast={idx === events.length - 1}
+          onSelect={() => onSelect(event.event_id)}
+          onStatusChange={(status) => onStatusChange(event, status)}
+        />
+      ))}
+    </div>
+  )
+})
+
+// ── GroupInstanceItem — a single occurrence inside an expanded group ───────────
+
+interface GroupInstanceItemProps {
+  event: RedactionEvent
+  selected: boolean
+  isLast: boolean
+  onSelect: () => void
+  onStatusChange: (status: EventStatus) => void
+}
+
+const GroupInstanceItem = React.memo(function GroupInstanceItem({
+  event, selected, isLast, onSelect, onStatusChange,
+}: GroupInstanceItemProps) {
+  const startMs = event.time_ranges[0]?.start_ms ?? 0
+  const endMs = event.time_ranges[event.time_ranges.length - 1]?.end_ms ?? 0
+
+  const statusColor =
+    event.status === 'accepted' ? 'var(--accept)'
+    : event.status === 'rejected' ? 'var(--reject)'
+    : 'var(--pending)'
+
+  return (
+    <div
+      onClick={onSelect}
+      style={{
+        padding: 'var(--space-2) var(--space-3) var(--space-2) var(--space-6)',
+        background: selected ? 'rgba(216,27,96,0.07)' : 'transparent',
+        borderBottom: isLast ? 'none' : '1px solid var(--border-hairline)',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--space-2)',
+        fontSize: 'var(--font-size-xs)',
+        transition: 'background var(--transition-fast)',
+      }}
+    >
+      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', flex: 1, whiteSpace: 'nowrap' }}>
+        {formatMs(startMs)} – {formatMs(endMs)}
+      </span>
+      <span style={{ color: statusColor, fontWeight: 500, minWidth: 50 }}>{event.status}</span>
+      {selected && (
+        <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+          <StatusMiniButton
+            active={event.status === 'accepted'}
+            color="var(--accept)"
+            label="✓"
+            title="Accept"
+            onClick={() => onStatusChange('accepted')}
+          />
+          <StatusMiniButton
+            active={event.status === 'pending'}
+            color="var(--pending)"
+            label="●"
+            title="Reset to pending"
+            onClick={() => onStatusChange('pending')}
+          />
+          <StatusMiniButton
+            active={event.status === 'rejected'}
+            color="var(--reject)"
+            label="✕"
+            title="Reject"
+            onClick={() => onStatusChange('rejected')}
+          />
+        </div>
+      )}
+    </div>
+  )
+})
+
+function StatusMiniButton({ active, color, label, title, onClick }: {
+  active: boolean; color: string; label: string; title: string; onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        fontSize: 10, padding: '2px 6px', minHeight: 20, minWidth: 22,
+        background: active ? color : 'var(--glass-bg)',
+        color: active ? (color === 'var(--pending)' ? '#000' : '#fff') : color,
+        border: `1px solid ${active ? color : 'var(--border)'}`,
+        borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+        transition: 'all var(--transition-fast)',
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+// ── FindingItem — used in flat (non-grouped) view ─────────────────────────────
 
 interface FindingItemProps {
   event: RedactionEvent
   selected: boolean
   onSelect: () => void
-  onAccept: () => void
-  onReject: () => void
+  onStatusChange: (status: EventStatus) => void
 }
 
-const FindingItem = React.memo(function FindingItem({ event, selected, onSelect, onAccept, onReject }: FindingItemProps) {
+const FindingItem = React.memo(function FindingItem({ event, selected, onSelect, onStatusChange }: FindingItemProps) {
   const startMs = event.time_ranges[0]?.start_ms ?? 0
   const endMs = event.time_ranges[event.time_ranges.length - 1]?.end_ms ?? 0
 
@@ -212,7 +521,6 @@ const FindingItem = React.memo(function FindingItem({ event, selected, onSelect,
       data-selected={selected}
       onClick={onSelect}
     >
-      {/* Row header: type tag + status badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-1)' }}>
         <span className={`tag ${event.pii_type}`}>{event.pii_type}</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', color: statusColor, fontWeight: 500 }}>
@@ -220,36 +528,47 @@ const FindingItem = React.memo(function FindingItem({ event, selected, onSelect,
         </span>
       </div>
 
-      {/* Detected text */}
       <div style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', marginBottom: 'var(--space-1)', color: 'var(--text)' }}>
-        {event.extracted_text ?? '[secure mode]'}
+        {event.extracted_text ?? '(text not stored)'}
       </div>
 
-      {/* Timestamp range + confidence score + style badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
-        <span>{formatMs(startMs)} \u2013 {formatMs(endMs)}</span>
+        <span>{formatMs(startMs)} – {formatMs(endMs)}</span>
         <span>{Math.round(event.confidence * 100)}%</span>
         <span style={{ marginLeft: 'auto', fontSize: 'var(--font-size-xs)', padding: '1px 5px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
           {event.redaction_style.type === 'solid_box' ? 'box' : event.redaction_style.type}
         </span>
       </div>
 
-      {/* Accept/Reject buttons — only shown when this item is selected and still pending */}
-      {selected && event.status === 'pending' && (
+      {/* 3-way status toggle — visible when selected, regardless of current status */}
+      {selected && (
         <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
           <button
             className="accept"
-            onClick={(e) => { e.stopPropagation(); onAccept() }}
-            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
+            onClick={(e) => { e.stopPropagation(); onStatusChange('accepted') }}
+            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28, opacity: event.status === 'accepted' ? 1 : 0.55 }}
           >
-            A \u2014 Accept
+            {event.status === 'accepted' ? '✓ Accepted' : 'A — Accept'}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onStatusChange('pending') }}
+            style={{
+              flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28,
+              background: 'var(--glass-bg)',
+              color: event.status === 'pending' ? 'var(--pending)' : 'var(--text-muted)',
+              border: `1px solid ${event.status === 'pending' ? 'var(--pending)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-md)', cursor: 'pointer',
+              opacity: event.status === 'pending' ? 1 : 0.55,
+            }}
+          >
+            {event.status === 'pending' ? '● Pending' : 'Reset'}
           </button>
           <button
             className="reject"
-            onClick={(e) => { e.stopPropagation(); onReject() }}
-            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28 }}
+            onClick={(e) => { e.stopPropagation(); onStatusChange('rejected') }}
+            style={{ flex: 1, fontSize: 'var(--font-size-small)', padding: 'var(--space-1) var(--space-2)', minHeight: 28, opacity: event.status === 'rejected' ? 1 : 0.55 }}
           >
-            R \u2014 Reject
+            {event.status === 'rejected' ? '✕ Rejected' : 'R — Reject'}
           </button>
         </div>
       )}

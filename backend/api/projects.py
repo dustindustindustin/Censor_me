@@ -83,18 +83,87 @@ async def get_project(project_id: UUID) -> ProjectFile:
 @router.delete("/{project_id}")
 async def delete_project(project_id: UUID):
     """
-    Permanently delete a project directory and all its contents.
+    Delete a project's internal files while preserving the source video and exports.
 
-    This removes the source video copy (if stored locally), the proxy, all
-    exports, and the project.json. This operation is not reversible.
+    Deleted (project internals only):
+    - project.json
+    - .proxy/          (generated 720p preview — always regenerable)
+    - .scan_status.json (temporary scan state file)
+
+    Preserved:
+    - The source video file if it was uploaded and lives inside the project dir
+    - exports/  (redacted output videos the user may not have saved elsewhere yet)
+
+    The project directory itself is removed only if it becomes empty after cleanup
+    (this happens in Tauri mode where the source video lives outside the project dir
+    and no exports have been generated yet).
     """
     import shutil
 
     proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    shutil.rmtree(proj_dir)
+
+    # Delete only known project-internal items
+    for name in ("project.json", ".proxy", ".scan_status.json"):
+        target = proj_dir / name
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.is_file():
+            target.unlink(missing_ok=True)
+
+    # Remove the project directory itself only if it is now empty.
+    # If a source video copy or exports/ remain it will not be empty and we leave it.
+    try:
+        proj_dir.rmdir()
+    except OSError:
+        pass
+
     return {"deleted": str(project_id)}
+
+
+@router.patch("/{project_id}/name")
+async def rename_project(project_id: UUID, body: dict):
+    """
+    Rename a project.
+
+    Body: { "name": "New name" }
+    """
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name cannot be empty")
+
+    proj_dir = project_dir(str(project_id))
+    if not proj_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    async with get_project_lock(str(project_id)):
+        project = ProjectFile.load(proj_dir)
+        project.name = name
+        project.save(proj_dir)
+    return {"name": name}
+
+
+@router.delete("/{project_id}/events/{event_id}")
+async def delete_event(project_id: UUID, event_id: str):
+    """
+    Permanently remove a single RedactionEvent from the project.
+
+    The event is identified by its event_id. Returns 404 if the event
+    does not exist in the project.
+    """
+    proj_dir = project_dir(str(project_id))
+    if not proj_dir.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    async with get_project_lock(str(project_id)):
+        project = ProjectFile.load(proj_dir)
+        original_count = len(project.events)
+        project.events = [e for e in project.events if e.event_id != event_id]
+        if len(project.events) == original_count:
+            raise HTTPException(status_code=404, detail="Event not found")
+        project.save(proj_dir)
+    return {"deleted": event_id}
 
 
 @router.post("/{project_id}/events")

@@ -510,8 +510,9 @@ async def scan_single_frame(project_id: UUID, request: Request, frame_index: int
                 redaction_style=default_style,
                 status="pending",
             )
-            tracked = tracker.track_event(event, str(video_path), fps)
-            new_events.append(tracked)
+            event = tracker.track_forward(event, str(video_path), fps)
+            event = tracker.track_backward(event, str(video_path), fps)
+            new_events.append(event)
 
         return new_events, fps
 

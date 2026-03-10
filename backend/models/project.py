@@ -159,7 +159,7 @@ class ScanSettings(BaseModel):
         )
     )
     secure_mode: bool = Field(
-        default=True,
+        default=False,
         description=(
             "When True, ``extracted_text`` is never stored in the project file. "
             "Findings are tracked by bbox/time only. Reduces PII exposure at rest."

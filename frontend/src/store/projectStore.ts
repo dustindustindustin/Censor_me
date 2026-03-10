@@ -97,6 +97,8 @@ interface ProjectStore {
   addEvent: (event: RedactionEvent) => void
   /** Append multiple new events in a single state update (e.g., after a single-frame scan). */
   addEvents: (events: RedactionEvent[]) => void
+  /** Remove a single event from the list by ID. Clears selection if the removed event was selected. */
+  removeEvent: (eventId: string) => void
   /** Replace a single event in the list (e.g., after tracking updates its keyframes). */
   updateEvent: (event: RedactionEvent) => void
   /** Update scan and output settings in the open project (optimistic, after API save). */
@@ -145,6 +147,13 @@ interface ProjectStore {
   /** Video zoom level (CSS scale). Range [1.0, 4.0]. */
   zoomLevel: number
   setZoomLevel: (z: number) => void
+  /** Pan offset X in unscaled pixels (applied inside the scale transform). */
+  panX: number
+  /** Pan offset Y in unscaled pixels (applied inside the scale transform). */
+  panY: number
+  setPan: (x: number, y: number) => void
+  /** Reset both zoom and pan to their defaults (zoom=1, pan=0,0). */
+  resetZoomPan: () => void
 
   // ── Draw mode ───────────────────────────────────────────────────────────────
 
@@ -229,6 +238,8 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     testFrameOverlay: null,
     scanPreviewFrame: null,
     zoomLevel: 1,
+    panX: 0,
+    panY: 0,
     drawingMode: false,
     staticDrawMode: false,
     scanId: null,
@@ -277,6 +288,12 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   addEvents: (events) =>
     set((state) => ({ events: [...state.events, ...events] })),
 
+  removeEvent: (eventId) =>
+    set((state) => ({
+      events: state.events.filter((e) => e.event_id !== eventId),
+      selectedEventId: state.selectedEventId === eventId ? null : state.selectedEventId,
+    })),
+
   updateEvent: (event) =>
     set((state) => ({
       events: state.events.map((e) => e.event_id === event.event_id ? event : e),
@@ -317,7 +334,14 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   // ── Zoom ────────────────────────────────────────────────────────────────────
 
   zoomLevel: 1,
-  setZoomLevel: (z) => set({ zoomLevel: z }),
+  setZoomLevel: (z) => {
+    const newZ = Math.max(1, Math.min(4, z))
+    set({ zoomLevel: newZ, ...(newZ === 1 ? { panX: 0, panY: 0 } : {}) })
+  },
+  panX: 0,
+  panY: 0,
+  setPan: (x, y) => set({ panX: x, panY: y }),
+  resetZoomPan: () => set({ zoomLevel: 1, panX: 0, panY: 0 }),
 
   // ── Draw mode ───────────────────────────────────────────────────────────────
 

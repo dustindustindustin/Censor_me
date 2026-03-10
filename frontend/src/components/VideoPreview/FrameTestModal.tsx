@@ -9,7 +9,7 @@
 
 import { useRef, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, ChevronLeft, X } from 'lucide-react'
-import { addEventToProject, testFrame } from '../../api/client'
+import { addEventToProject, testFrame, trackManualEvent } from '../../api/client'
 import { useProjectStore } from '../../store/projectStore'
 import { PII_LABEL_COLORS } from '../../styles/theme'
 import type { FrameTestRawResult, FrameTestResult, RedactionEvent, TestFrameOverlayBox } from '../../types'
@@ -42,10 +42,11 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
   // Whether the user has committed the selection ("Add to Censor List" was clicked)
   const [committed, setCommitted] = useState(false)
   const [committing, setCommitting] = useState(false)
-  const { project, addEvent, setTestFrameOverlay } = useProjectStore((s) => ({
+  const { project, addEvent, setTestFrameOverlay, updateEvent } = useProjectStore((s) => ({
     project: s.project,
     addEvent: s.addEvent,
     setTestFrameOverlay: s.setTestFrameOverlay,
+    updateEvent: s.updateEvent,
   }))
   const defaultStyle = project?.scan_settings?.default_redaction_style ?? { type: 'blur' as const, strength: 15, color: '#000000' }
   const inputRef = useRef<HTMLInputElement>(null)
@@ -126,6 +127,12 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
         }
         const saved = await addEventToProject(projectId, event)
         addEvent(saved)
+        try {
+          const tracked = await trackManualEvent(projectId, saved.event_id, { static: false })
+          updateEvent(tracked)
+        } catch (err) {
+          console.warn('Tracking failed for test-frame PII item (single-frame redaction kept):', err)
+        }
       }
       // Add manually selected OCR boxes (no PII classification — type is 'manual')
       for (const box of ocrToAdd) {
@@ -144,6 +151,12 @@ export function FrameTestModal({ projectId, initialFrameIndex, totalFrames, fps,
         }
         const saved = await addEventToProject(projectId, event)
         addEvent(saved)
+        try {
+          const tracked = await trackManualEvent(projectId, saved.event_id, { static: false })
+          updateEvent(tracked)
+        } catch (err) {
+          console.warn('Tracking failed for test-frame OCR item (single-frame redaction kept):', err)
+        }
       }
       setCommitted(true)
     } catch (e) {

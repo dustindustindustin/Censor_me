@@ -8,9 +8,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Layers, Plus, Settings, Zap } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Layers, Plus, Settings, Trash2, Zap } from 'lucide-react'
 import logoSrc from './assets/logo.svg'
-import { createProject, getActiveScan, getProject, getSetupStatus, getSystemStatus, listProjects } from './api/client'
+import { createProject, deleteProject, getActiveScan, getProject, getSetupStatus, getSystemStatus, listProjects, renameProject } from './api/client'
 import { AboutDialog } from './components/AboutDialog/AboutDialog'
 import { SetupWizard } from './components/SetupWizard/SetupWizard'
 import { BatchPanel } from './components/BatchPanel/BatchPanel'
@@ -29,6 +29,12 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBatch, setShowBatch] = useState(false)
   const [showAbout, setShowAbout] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState(false)
+  const [draftName, setDraftName] = useState('')
+  const nameInputRef = useRef<HTMLInputElement>(null)
   const [setupNeeded, setSetupNeeded] = useState<null | { gpu_detected: boolean; gpu_vendor: string; gpu_name: string | null }>(null)
   const { project, setProject, clearProject, setScanId } = useProjectStore((s) => ({
     project: s.project,
@@ -36,6 +42,33 @@ export default function App() {
     clearProject: s.clearProject,
     setScanId: s.setScanId,
   }))
+
+  const handleRenameProject = async () => {
+    const name = draftName.trim()
+    setEditingName(false)
+    if (!name || name === project?.name) return
+    try {
+      await renameProject(project!.project_id, name)
+      setProject({ ...project!, name })
+    } catch {
+      // silently revert — name in store stays as the original
+    }
+  }
+
+  const handleDeleteProject = async () => {
+    if (!project) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await deleteProject(project.project_id)
+      clearProject()
+      setShowDeleteConfirm(false)
+    } catch {
+      setDeleteError('Failed to delete project. Try again.')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   // Wrapper around setProject that also reconnects to any in-progress scan.
   // Called when the user opens a project from the selector — handles the case
@@ -185,9 +218,48 @@ export default function App() {
         gap: 'var(--space-3)',
         fontSize: 'var(--font-size-body)',
       }}>
-        <img src={logoSrc} alt="Censor Me" onClick={clearProject} title="Back to project list" style={{ height: 24, cursor: 'pointer' }} />
+        <button
+          className="ghost"
+          onClick={clearProject}
+          title="Back to project list"
+          style={{ padding: 'var(--space-1) var(--space-2)', minHeight: 'auto', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-1)', fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}
+        >
+          <ArrowLeft size={14} /> Projects
+        </button>
         <ChevronRight size={14} style={{ color: 'var(--text-disabled)' }} />
-        <span>{project.name}</span>
+        {editingName ? (
+          <input
+            ref={nameInputRef}
+            type="text"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameProject()
+              if (e.key === 'Escape') setEditingName(false)
+            }}
+            onBlur={handleRenameProject}
+            autoFocus
+            style={{
+              fontSize: 'var(--font-size-body)',
+              background: 'var(--bg)',
+              border: '1px solid var(--accent)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--text)',
+              padding: '2px 6px',
+              width: Math.max(120, draftName.length * 9),
+            }}
+          />
+        ) : (
+          <span
+            onClick={() => { setDraftName(project.name); setEditingName(true) }}
+            title="Click to rename"
+            style={{ cursor: 'text', borderBottom: '1px dashed transparent' }}
+            onMouseOver={(e) => (e.currentTarget.style.borderBottomColor = 'var(--text-disabled)')}
+            onMouseOut={(e) => (e.currentTarget.style.borderBottomColor = 'transparent')}
+          >
+            {project.name}
+          </span>
+        )}
         {project.video && (
           <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>
             {project.video.width}&times;{project.video.height} &middot; {project.video.fps.toFixed(0)} fps &middot; {project.video.codec}
@@ -201,6 +273,14 @@ export default function App() {
           )}
           <button
             className="ghost"
+            onClick={() => { setShowDeleteConfirm(true); setDeleteError(null) }}
+            title="Delete this project"
+            style={{ padding: 'var(--space-1)', minHeight: 'auto', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}
+          >
+            <Trash2 size={15} />
+          </button>
+          <button
+            className="ghost"
             onClick={() => setShowSettings(true)}
             data-tooltip="Settings"
             style={{ padding: 'var(--space-1)', minHeight: 'auto', display: 'flex', alignItems: 'center' }}
@@ -209,6 +289,62 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* Delete project confirmation modal */}
+      {showDeleteConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 200,
+          background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowDeleteConfirm(false) }}
+        >
+          <div className="glass" style={{
+            width: 420, padding: 'var(--space-6)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: 'var(--shadow-elevated)',
+            display: 'flex', flexDirection: 'column', gap: 'var(--space-4)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <Trash2 size={20} style={{ color: 'var(--reject)', flexShrink: 0 }} />
+              <span style={{ fontWeight: 600, fontSize: 'var(--font-size-body)' }}>Delete Project?</span>
+            </div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              This will remove <strong style={{ color: 'var(--text)' }}>{project.name}</strong> from Censor Me
+              and delete its scan data and proxy preview.
+            </div>
+            <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              Your <strong style={{ color: 'var(--text)' }}>source video</strong> and any <strong style={{ color: 'var(--text)' }}>exported redacted videos</strong> will not be deleted.
+            </div>
+            {deleteError && (
+              <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--reject)' }}>{deleteError}</div>
+            )}
+            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+              <button
+                className="secondary"
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteProject}
+                disabled={deleting}
+                style={{
+                  padding: 'var(--space-2) var(--space-4)',
+                  background: 'var(--reject)', color: '#fff',
+                  border: 'none', borderRadius: 'var(--radius-md)',
+                  cursor: deleting ? 'wait' : 'pointer',
+                  fontSize: 'var(--font-size-body)',
+                  display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)',
+                }}
+              >
+                <Trash2 size={14} /> {deleting ? 'Deleting\u2026' : 'Delete Project'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Three-pane layout */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -248,6 +384,7 @@ function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) 
   const [error, setError] = useState<string | null>(null)
   const [showNewProject, setShowNewProject] = useState(false)
   const [newProjectName, setNewProjectName] = useState('Untitled Project')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -257,6 +394,20 @@ function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) 
   useEffect(() => {
     if (showNewProject) inputRef.current?.select()
   }, [showNewProject])
+
+  const handleDeleteFromSelector = async (e: React.MouseEvent, projectId: string, name: string) => {
+    e.stopPropagation()
+    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return
+    setDeletingId(projectId)
+    try {
+      await deleteProject(projectId)
+      setProjects((prev) => prev.filter((p) => p.project_id !== projectId))
+    } catch {
+      setError('Failed to delete project.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const handleCreate = async () => {
     const name = newProjectName.trim()
@@ -360,6 +511,7 @@ function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) 
               key={p.project_id}
               className="project-card"
               onClick={() => handleOpen(p.project_id)}
+              style={{ position: 'relative' }}
             >
               <div>
                 <div style={{ fontWeight: 500 }}>{p.name}</div>
@@ -369,8 +521,25 @@ function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) 
                   </div>
                 )}
               </div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}>
-                {new Date(p.updated_at).toLocaleDateString()}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                <div style={{ color: 'var(--text-muted)', fontSize: 'var(--font-size-xs)' }}>
+                  {new Date(p.updated_at).toLocaleDateString()}
+                </div>
+                <button
+                  onClick={(e) => handleDeleteFromSelector(e, p.project_id, p.name)}
+                  disabled={deletingId === p.project_id}
+                  title="Delete project"
+                  style={{
+                    padding: 4, minHeight: 'auto', background: 'transparent', border: 'none',
+                    color: 'var(--text-disabled)', cursor: 'pointer', borderRadius: 'var(--radius-sm)',
+                    display: 'flex', alignItems: 'center',
+                    opacity: deletingId === p.project_id ? 0.4 : 1,
+                  }}
+                  onMouseOver={(e) => (e.currentTarget.style.color = 'var(--reject)')}
+                  onMouseOut={(e) => (e.currentTarget.style.color = 'var(--text-disabled)')}
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
             </div>
           ))}

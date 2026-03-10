@@ -133,6 +133,7 @@ export function OverlayCanvas({
     livePreviewMode,
     addNotification,
     pushUndo,
+    zoomLevel,
   } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
@@ -150,6 +151,7 @@ export function OverlayCanvas({
     livePreviewMode: s.livePreviewMode,
     addNotification: s.addNotification,
     pushUndo: s.pushUndo,
+    zoomLevel: s.zoomLevel,
   }))
 
   // Mouse interaction state (refs to avoid triggering re-renders on every frame)
@@ -271,6 +273,8 @@ export function OverlayCanvas({
               const bbox = padBbox(rawBbox, sourceWidth, sourceHeight)
 
               const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+              // Skip boxes fully outside the visible canvas area (panned out of view)
+              if (rx + rw < 0 || ry + rh < 0 || rx > canvas.width || ry > canvas.height) continue
 
               // Source rect in proxy pixel coords (for drawImage)
               const vx = bbox.x * s.srcToProxyX
@@ -333,6 +337,8 @@ export function OverlayCanvas({
               const bbox = padBbox(rawBbox, sourceWidth, sourceHeight)
 
               const { rx, ry, rw, rh } = srcBboxToScreen(bbox, s)
+              // Skip boxes fully outside the visible canvas area (panned out of view)
+              if (rx + rw < 0 || ry + rh < 0 || rx > canvas.width || ry > canvas.height) continue
               const isSelected = event.event_id === selectedEventId
               const isManual = event.source === 'manual'
               const isPending = event.status === 'pending'
@@ -362,9 +368,14 @@ export function OverlayCanvas({
               ctx.strokeRect(rx, ry, rw, rh)
               ctx.setLineDash([])
 
+              ctx.save()
+              ctx.beginPath()
+              ctx.rect(0, 0, canvas.width, canvas.height)
+              ctx.clip()
               ctx.font = `10px ${theme.fontFamily}`
               ctx.fillStyle = strokeColor
               ctx.fillText(event.pii_type.toUpperCase(), rx + 3, ry - 3)
+              ctx.restore()
 
               // Resize handles for the selected event
               if (isSelected) {
@@ -386,15 +397,21 @@ export function OverlayCanvas({
           for (const box of testFrameOverlay) {
             const [bx, by, bw, bh] = box.bbox
             const { rx, ry, rw, rh } = srcBboxToScreen({ x: bx, y: by, w: bw, h: bh }, s)
+            if (rx + rw < 0 || ry + rh < 0 || rx > canvas.width || ry > canvas.height) continue
             ctx.fillStyle = theme.testFrameFill
             ctx.fillRect(rx, ry, rw, rh)
             ctx.strokeStyle = theme.testFrame
             ctx.lineWidth = 2
             ctx.setLineDash([])
             ctx.strokeRect(rx, ry, rw, rh)
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(0, 0, canvas.width, canvas.height)
+            ctx.clip()
             ctx.font = `10px ${theme.fontFamily}`
             ctx.fillStyle = theme.testFrame
             ctx.fillText(box.pii_type.toUpperCase(), rx + 3, ry - 3)
+            ctx.restore()
           }
         }
 
@@ -403,15 +420,21 @@ export function OverlayCanvas({
           for (const box of scanPreviewFrame.boxes) {
             const [bx, by, bw, bh] = box.bbox
             const { rx, ry, rw, rh } = srcBboxToScreen({ x: bx, y: by, w: bw, h: bh }, s)
+            if (rx + rw < 0 || ry + rh < 0 || rx > canvas.width || ry > canvas.height) continue
             ctx.fillStyle = theme.scanPreviewFill
             ctx.fillRect(rx, ry, rw, rh)
             ctx.strokeStyle = theme.scanPreview
             ctx.lineWidth = 2
             ctx.setLineDash([])
             ctx.strokeRect(rx, ry, rw, rh)
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(0, 0, canvas.width, canvas.height)
+            ctx.clip()
             ctx.font = `10px ${theme.fontFamily}`
             ctx.fillStyle = theme.scanPreview
             ctx.fillText(box.pii_type.toUpperCase(), rx + 3, ry - 3)
+            ctx.restore()
           }
         }
 
@@ -522,6 +545,7 @@ export function OverlayCanvas({
               origBbox: { ...bbox },
               startScreen: { x: mx, y: my },
             }
+            e.stopPropagation()
             return
           }
         }
@@ -544,6 +568,7 @@ export function OverlayCanvas({
           startMouseSrc: { x: srcPos.nx, y: srcPos.ny },
           origBbox: { ...bbox },
         }
+        e.stopPropagation()
         return
       }
     }
@@ -552,6 +577,7 @@ export function OverlayCanvas({
     if (polygonDrawMode) {
       const { nx, ny } = screenToSrc(mx, my, s)
       polygonPoints.current = [...polygonPoints.current, { nx, ny }]
+      e.stopPropagation()
       return
     }
 
@@ -560,6 +586,7 @@ export function OverlayCanvas({
       const { nx, ny } = screenToSrc(mx, my, s)
       drawStart.current = { nx, ny }
       drawCurrent.current = { nx, ny }
+      e.stopPropagation()
     }
   }
 
@@ -674,7 +701,8 @@ export function OverlayCanvas({
       }
     }
 
-    setCursorStyle('default')
+    // When zoomed and not in draw mode, hint that drag-to-pan is available
+    setCursorStyle(zoomLevel > 1 ? 'grab' : 'default')
   }
 
   const handleMouseUp = async (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -786,8 +814,9 @@ export function OverlayCanvas({
     }
   }
 
-  const handleDoubleClick = async () => {
+  const handleDoubleClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!polygonDrawMode || polygonPoints.current.length < 3) return
+    e.stopPropagation()
     const s = getScales()
     if (!s) return
 

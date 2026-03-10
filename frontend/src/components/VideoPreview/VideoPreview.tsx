@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Loader2, Minus, Pause, Play, Plus } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Minus, Pause, Play, Plus, SkipBack, SkipForward } from 'lucide-react'
 import videoBg from '../../assets/video-bg.png'
 import { cancelScan, getProject, importVideo, importVideoFromPath, proxyVideoUrl, scanFrame, startRangeScan, startScan } from '../../api/client'
 import { useScanProgress } from '../../hooks/useScanProgress'
@@ -36,6 +36,10 @@ export function VideoPreview({ videoRef, style }: Props) {
     setTestFrameOverlay,
     zoomLevel,
     setZoomLevel,
+    panX,
+    panY,
+    setPan,
+    resetZoomPan,
     drawingMode,
     setDrawingMode,
     polygonDrawMode,
@@ -59,6 +63,10 @@ export function VideoPreview({ videoRef, style }: Props) {
     setTestFrameOverlay: s.setTestFrameOverlay,
     zoomLevel: s.zoomLevel,
     setZoomLevel: s.setZoomLevel,
+    panX: s.panX,
+    panY: s.panY,
+    setPan: s.setPan,
+    resetZoomPan: s.resetZoomPan,
     drawingMode: s.drawingMode,
     setDrawingMode: s.setDrawingMode,
     polygonDrawMode: s.polygonDrawMode,
@@ -144,6 +152,18 @@ export function VideoPreview({ videoRef, style }: Props) {
   }, [rangeOpen])
 
   const [dragOver, setDragOver] = useState(false)
+
+  // Pan drag state — ref drives logic (no re-renders), state drives cursor style only
+  const panDragRef = useRef<{ startX: number; startY: number; startPanX: number; startPanY: number } | null>(null)
+  const isPanningRef = useRef(false)
+  const [isPanDragging, setIsPanDragging] = useState(false)
+
+  // Zoom badge: shows current zoom % briefly after each change
+  const [showZoomBadge, setShowZoomBadge] = useState(false)
+  const zoomBadgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // FPS derived from project metadata; used for frame-step calculations
+  const fps = project?.video?.fps ?? 30
 
   const VALID_EXTENSIONS = ['.mp4', '.mov', '.mkv', '.avi', '.webm']
   const IS_TAURI = '__TAURI_INTERNALS__' in window
@@ -283,6 +303,126 @@ export function VideoPreview({ videoRef, style }: Props) {
     if (videoRef.current) videoRef.current.playbackRate = r
   }
 
+  // ── Frame-by-frame step ─────────────────────────────────────────────────────
+
+  const stepFrameBack = () => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = Math.max(0, video.currentTime - 1 / fps)
+  }
+
+  const stepFrameForward = () => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = Math.min(video.duration, video.currentTime + 1 / fps)
+  }
+
+  // ── Pan helpers ──────────────────────────────────────────────────────────────
+
+  /** Clamp pan so the video cannot be dragged fully off screen. */
+  const clampPan = (px: number, py: number, zoom: number) => {
+    const container = videoContainerRef.current
+    if (!container) return { x: px, y: py }
+    const { width, height } = container.getBoundingClientRect()
+    const maxX = (width / 2) / zoom
+    const maxY = (height / 2) / zoom
+    return {
+      x: Math.max(-maxX, Math.min(maxX, px)),
+      y: Math.max(-maxY, Math.min(maxY, py)),
+    }
+  }
+
+  const handleContainerMouseDown = (e: React.MouseEvent) => {
+    if (zoomLevel <= 1) return
+    if (drawingMode || polygonDrawMode) return
+    panDragRef.current = { startX: e.clientX, startY: e.clientY, startPanX: panX, startPanY: panY }
+    isPanningRef.current = true
+    setIsPanDragging(true)
+    e.preventDefault()
+  }
+
+  const handleContainerMouseMove = (e: React.MouseEvent) => {
+    if (!isPanningRef.current || !panDragRef.current) return
+    const dx = e.clientX - panDragRef.current.startX
+    const dy = e.clientY - panDragRef.current.startY
+    const newPanX = panDragRef.current.startPanX + dx / zoomLevel
+    const newPanY = panDragRef.current.startPanY + dy / zoomLevel
+    const clamped = clampPan(newPanX, newPanY, zoomLevel)
+    setPan(clamped.x, clamped.y)
+  }
+
+  const stopPan = () => {
+    isPanningRef.current = false
+    panDragRef.current = null
+    setIsPanDragging(false)
+  }
+
+  const handleContainerDoubleClick = (e: React.MouseEvent) => {
+    if (e.target instanceof HTMLCanvasElement) return
+    if (zoomLevel > 1) resetZoomPan()
+    else setZoomLevel(2)
+  }
+
+  // ── Mouse wheel: zoom-to-cursor ──────────────────────────────────────────────
+
+  useEffect(() => {
+    const container = videoContainerRef.current
+    if (!container) return
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = container.getBoundingClientRect()
+      // Access store state directly to avoid stale closure
+      const store = useProjectStore.getState()
+      const curZoom = store.zoomLevel
+      const curPanX = store.panX
+      const curPanY = store.panY
+      // Cursor position relative to container center in screen space
+      const cx_screen = e.clientX - rect.left - rect.width / 2
+      const cy_screen = e.clientY - rect.top - rect.height / 2
+      // The point under the cursor in unscaled local space
+      const cx_local = cx_screen / curZoom - curPanX
+      const cy_local = cy_screen / curZoom - curPanY
+      // New zoom level
+      const factor = e.deltaY < 0 ? 1.15 : 0.87
+      const newZoom = Math.max(1, Math.min(4, curZoom * factor))
+      // Solve for new pan so that cx_local stays at cx_screen:
+      //   cx_screen = (cx_local + newPanX) * newZoom  →  newPanX = cx_screen/newZoom - cx_local
+      const rawPanX = cx_screen / newZoom - cx_local
+      const rawPanY = cy_screen / newZoom - cy_local
+      const maxX = (rect.width / 2) / newZoom
+      const maxY = (rect.height / 2) / newZoom
+      store.setZoomLevel(newZoom)
+      store.setPan(
+        Math.max(-maxX, Math.min(maxX, rawPanX)),
+        Math.max(-maxY, Math.min(maxY, rawPanY)),
+      )
+    }
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => container.removeEventListener('wheel', handleWheel)
+  }, [videoContainerRef.current])
+
+  // ── Zoom badge visibility ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (zoomLevel === 1) {
+      setShowZoomBadge(false)
+      return
+    }
+    setShowZoomBadge(true)
+    if (zoomBadgeTimerRef.current) clearTimeout(zoomBadgeTimerRef.current)
+    zoomBadgeTimerRef.current = setTimeout(() => setShowZoomBadge(false), 1500)
+    return () => {
+      if (zoomBadgeTimerRef.current) clearTimeout(zoomBadgeTimerRef.current)
+    }
+  }, [zoomLevel])
+
+  // ── Grabbing cursor: override all child cursors while panning ────────────────
+
+  useEffect(() => {
+    document.body.style.cursor = isPanDragging ? 'grabbing' : ''
+    return () => { document.body.style.cursor = '' }
+  }, [isPanDragging])
+
   const closeFrameTest = () => {
     setShowFrameTest(false)
     setTestFrameOverlay(null)
@@ -290,7 +430,6 @@ export function VideoPreview({ videoRef, style }: Props) {
 
   const handleScanFrame = async () => {
     if (!project?.video || scanningFrame || scanProgress.isRunning) return
-    const fps = project.video.fps
     const frameIndex = Math.round((currentTime / 1000) * fps)
     setScanningFrame(true)
     setScanFrameMsg(null)
@@ -578,13 +717,25 @@ export function VideoPreview({ videoRef, style }: Props) {
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
-        style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden' }}
+        onMouseDown={handleContainerMouseDown}
+        onMouseMove={handleContainerMouseMove}
+        onMouseUp={stopPan}
+        onMouseLeave={stopPan}
+        onDoubleClick={handleContainerDoubleClick}
+        style={{
+          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          position: 'relative', overflow: 'hidden',
+          cursor: drawingMode || polygonDrawMode ? 'default'
+            : isPanDragging ? 'grabbing'
+            : zoomLevel > 1 ? 'grab'
+            : 'default',
+        }}
       >
         {proxyUrl ? (
           <>
-            {/* Zoom wrapper — only the video element is scaled */}
+            {/* Zoom wrapper — only the video element is scaled and translated */}
             <div style={{
-              transform: `scale(${zoomLevel})`,
+              transform: `scale(${zoomLevel}) translate(${panX}px, ${panY}px)`,
               transformOrigin: 'center center',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               width: '100%', height: '100%',
@@ -599,7 +750,9 @@ export function VideoPreview({ videoRef, style }: Props) {
                 }}
               />
             </div>
-            {/* Canvas sits OUTSIDE the zoom wrapper so it isn't scaled. */}
+            {/* Canvas sits OUTSIDE the zoom wrapper so it isn't scaled.
+                getBoundingClientRect() on the video includes the CSS transform,
+                so coordinate math in OverlayCanvas automatically accounts for zoom+pan. */}
             <OverlayCanvas
               videoRef={videoRef}
               containerRef={videoContainerRef}
@@ -610,6 +763,20 @@ export function VideoPreview({ videoRef, style }: Props) {
               sourceHeight={project?.video?.height ?? 0}
               isPaused={!isPlaying}
             />
+            {/* Zoom level badge — shown briefly after zoom changes */}
+            {showZoomBadge && zoomLevel > 1 && (
+              <div
+                style={{
+                  position: 'absolute', top: 'var(--space-2)', right: 'var(--space-2)',
+                  background: 'rgba(0,0,0,0.65)', color: '#fff',
+                  padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--font-size-small)', fontFamily: 'monospace',
+                  pointerEvents: 'none', zIndex: 20,
+                }}
+              >
+                {Math.round(zoomLevel * 100)}%
+              </div>
+            )}
           </>
         ) : importing ? (
           <div style={{ color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)' }}>
@@ -646,22 +813,61 @@ export function VideoPreview({ videoRef, style }: Props) {
           borderTop: '1px solid var(--border-hairline)',
           display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 'var(--font-size-body)',
         }}>
-          {/* Play/Pause */}
-          <button
-            onClick={handlePlayPause}
-            style={{
-              padding: 'var(--space-1) var(--space-2)', minWidth: 40, minHeight: 36,
-              background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-md)',
-              boxShadow: '0 0 12px rgba(216, 27, 96, 0.2)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-          >
-            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-          </button>
+          {/* Playback controls: 5-button group */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <button
+              className="ghost"
+              onClick={() => handleSeek(Math.max(0, currentTime - 5000))}
+              title="Back 5s (J)"
+              style={{ padding: 'var(--space-1)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <SkipBack size={15} />
+            </button>
+            <button
+              className="ghost"
+              onClick={stepFrameBack}
+              title="Back 1 frame (,)"
+              style={{ padding: 'var(--space-1)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontFamily: 'monospace' }}
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <button
+              onClick={handlePlayPause}
+              style={{
+                padding: 'var(--space-1) var(--space-2)', minWidth: 40, minHeight: 36,
+                background: 'var(--accent)', color: '#fff', borderRadius: 'var(--radius-md)',
+                boxShadow: '0 0 12px rgba(216, 27, 96, 0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+            <button
+              className="ghost"
+              onClick={stepFrameForward}
+              title="Forward 1 frame (.)"
+              style={{ padding: 'var(--space-1)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontFamily: 'monospace' }}
+            >
+              <ChevronRight size={15} />
+            </button>
+            <button
+              className="ghost"
+              onClick={() => handleSeek(Math.min(duration, currentTime + 5000))}
+              title="Forward 5s (L)"
+              style={{ padding: 'var(--space-1)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <SkipForward size={15} />
+            </button>
+          </div>
 
-          {/* Time */}
+          {/* Time + frame counter */}
           <span style={{ fontFamily: 'monospace', fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
             {formatMs(currentTime)} / {formatMs(duration)}
+            {fps > 0 && duration > 0 && (
+              <span style={{ marginLeft: 6, color: 'var(--text-disabled)', fontSize: 10 }}>
+                f{Math.round((currentTime / 1000) * fps)}
+              </span>
+            )}
           </span>
 
           {/* Volume */}
@@ -689,14 +895,38 @@ export function VideoPreview({ videoRef, style }: Props) {
             </select>
           </div>
 
-          {/* Zoom */}
+          {/* Zoom controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)', marginLeft: 'auto' }}>
-            <button className="ghost" onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))} style={{ padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Minus size={16} />
+            <button
+              className="ghost"
+              onClick={() => setZoomLevel(Math.max(1, zoomLevel - 0.5))}
+              title="Zoom out (- key)"
+              style={{ padding: 'var(--space-1)', minWidth: 28, minHeight: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Minus size={14} />
             </button>
-            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', minWidth: 28, textAlign: 'center' }}>{zoomLevel}&times;</span>
-            <button className="ghost" onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))} style={{ padding: 'var(--space-1) var(--space-2)', minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Plus size={16} />
+            <input
+              type="range" min={1} max={4} step={0.1}
+              value={zoomLevel}
+              onChange={(e) => setZoomLevel(parseFloat(e.target.value))}
+              title="Scroll on video to zoom; drag to pan"
+              style={{ width: 80, '--value-pct': rangePct(zoomLevel, 1, 4) } as React.CSSProperties}
+            />
+            <button
+              className="ghost"
+              onClick={resetZoomPan}
+              title="Click to reset zoom & pan (0 key)"
+              style={{ fontSize: 'var(--font-size-small)', fontFamily: 'monospace', color: zoomLevel > 1 ? 'var(--accent)' : 'var(--text-muted)', minWidth: 40, textAlign: 'center', padding: 'var(--space-1)' }}
+            >
+              {Math.round(zoomLevel * 100)}%
+            </button>
+            <button
+              className="ghost"
+              onClick={() => setZoomLevel(Math.min(4, zoomLevel + 0.5))}
+              title="Zoom in (= key)"
+              style={{ padding: 'var(--space-1)', minWidth: 28, minHeight: 28, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Plus size={14} />
             </button>
           </div>
         </div>

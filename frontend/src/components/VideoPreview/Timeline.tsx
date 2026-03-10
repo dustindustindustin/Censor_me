@@ -16,7 +16,7 @@
  * in the Inspector panel.
  */
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useProjectStore } from '../../store/projectStore'
 import { formatMs } from '../../utils/format'
 
@@ -55,6 +55,10 @@ export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint 
   // Ref to the clickable bar area so we can measure its width for coordinate math
   const barRef = useRef<HTMLDivElement>(null)
 
+  // Hover tooltip state
+  const [hoverTime, setHoverTime] = useState<number | null>(null)
+  const [hoverX, setHoverX] = useState(0)
+
   /**
    * Handle a click on the timeline bar.
    * Converts the click's X position to a time value and calls ``onSeek``.
@@ -67,6 +71,16 @@ export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint 
     onSeek(Math.floor(ratio * durationMs))
   }
 
+  const handleBarMouseMove = (e: React.MouseEvent) => {
+    if (!barRef.current) return
+    const rect = barRef.current.getBoundingClientRect()
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    setHoverTime(Math.floor(ratio * durationMs))
+    setHoverX(e.clientX - rect.left)
+  }
+
+  const handleBarMouseLeave = () => setHoverTime(null)
+
   // Convert playhead time to a percentage for CSS left positioning
   const playheadPct = durationMs > 0 ? (currentTimeMs / durationMs) * 100 : 0
 
@@ -76,15 +90,40 @@ export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint 
       <div
         ref={barRef}
         onClick={handleClick}
+        onMouseMove={handleBarMouseMove}
+        onMouseLeave={handleBarMouseLeave}
         style={{
           position: 'relative',
           height: 32,
           background: 'rgba(255, 255, 255, 0.08)',
           borderRadius: 'var(--radius-sm)',
           cursor: 'pointer',
-          overflow: 'hidden',
+          overflow: 'visible',
         }}
       >
+        {/* Hover time tooltip */}
+        {hoverTime !== null && (
+          <div
+            style={{
+              position: 'absolute',
+              left: hoverX,
+              bottom: '100%',
+              transform: 'translateX(-50%)',
+              background: 'rgba(0,0,0,0.78)',
+              color: '#fff',
+              padding: '2px 7px',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: 'var(--font-size-xs)',
+              fontFamily: 'monospace',
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap',
+              zIndex: 20,
+              marginBottom: 4,
+            }}
+          >
+            {formatMs(hoverTime)}
+          </div>
+        )}
         {/* ── Range scan shaded region (in → out) ── */}
         {inPoint != null && outPoint != null && (() => {
           const startPct = (Math.min(inPoint, outPoint) / durationMs) * 100
@@ -167,7 +206,7 @@ export function Timeline({ durationMs, currentTimeMs, onSeek, inPoint, outPoint 
             return (
               <div
                 key={`${event.event_id}-${rangeIdx}`}
-                title={`${event.pii_type}: ${event.extracted_text ?? '(secure mode)'}`}
+                title={`${event.pii_type}: ${event.extracted_text ?? '(text not stored)'}`}
                 onClick={(e) => {
                   e.stopPropagation()  // Don't also trigger the bar's seek handler
                   selectEvent(event.event_id)

@@ -50,13 +50,27 @@ interface KeyboardOptions {
  * @param options - See ``KeyboardOptions``.
  */
 export function useKeyboard({ projectId, videoRef, stepMs = 5000 }: KeyboardOptions): void {
-  const { selectedEventId, events, updateEventStatus: updateLocal, undo, redo, pushUndo } = useProjectStore((s) => ({
+  const {
+    selectedEventId, events, updateEventStatus: updateLocal, undo, redo, pushUndo,
+    zoomLevel, setZoomLevel, resetZoomPan,
+    selectEvent, drawingMode, setDrawingMode, polygonDrawMode, setPolygonDrawMode,
+    project,
+  } = useProjectStore((s) => ({
     selectedEventId: s.selectedEventId,
     events: s.events,
     updateEventStatus: s.updateEventStatus,
     undo: s.undo,
     redo: s.redo,
     pushUndo: s.pushUndo,
+    zoomLevel: s.zoomLevel,
+    setZoomLevel: s.setZoomLevel,
+    resetZoomPan: s.resetZoomPan,
+    selectEvent: s.selectEvent,
+    drawingMode: s.drawingMode,
+    setDrawingMode: s.setDrawingMode,
+    polygonDrawMode: s.polygonDrawMode,
+    setPolygonDrawMode: s.setPolygonDrawMode,
+    project: s.project,
   }))
 
   useEffect(() => {
@@ -111,7 +125,7 @@ export function useKeyboard({ projectId, videoRef, stepMs = 5000 }: KeyboardOpti
 
     const handler = async (e: KeyboardEvent) => {
       // Let the user type in form fields without triggering shortcuts
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return
 
       // Undo: Ctrl+Z (or Cmd+Z on Mac)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -130,6 +144,7 @@ export function useKeyboard({ projectId, videoRef, stepMs = 5000 }: KeyboardOpti
       }
 
       const video = videoRef.current
+      const fps = project?.video?.fps ?? 30
 
       switch (e.key.toLowerCase()) {
         case ' ':
@@ -151,6 +166,46 @@ export function useKeyboard({ projectId, videoRef, stepMs = 5000 }: KeyboardOpti
           if (video) video.currentTime = Math.min(video.duration, video.currentTime + stepMs / 1000)
           break
 
+        case ',':
+          // Step back one frame (industry standard: Premiere, DaVinci)
+          if (video) video.currentTime = Math.max(0, video.currentTime - 1 / fps)
+          break
+
+        case '.':
+          // Step forward one frame
+          if (video) video.currentTime = Math.min(video.duration, video.currentTime + 1 / fps)
+          break
+
+        case 'home':
+          e.preventDefault()
+          if (video) video.currentTime = 0
+          break
+
+        case 'end':
+          e.preventDefault()
+          if (video) video.currentTime = video.duration
+          break
+
+        case '=':
+        case '+':
+          setZoomLevel(Math.min(4, zoomLevel + 0.5))
+          break
+
+        case '-':
+        case '_':
+          setZoomLevel(Math.max(1, zoomLevel - 0.5))
+          break
+
+        case '0':
+          resetZoomPan()
+          break
+
+        case 'escape':
+          if (drawingMode) setDrawingMode(false)
+          else if (polygonDrawMode) setPolygonDrawMode(false)
+          else selectEvent(null)
+          break
+
         case 'a':
           if (selectedEventId) {
             const ev = events.find((e) => e.event_id === selectedEventId)
@@ -168,11 +223,22 @@ export function useKeyboard({ projectId, videoRef, stepMs = 5000 }: KeyboardOpti
             await updateEventStatus(projectId, selectedEventId, 'rejected')
           }
           break
+
+        case 'p':
+          if (selectedEventId) {
+            const ev = events.find((e) => e.event_id === selectedEventId)
+            if (ev) pushUndo({ type: 'status', eventId: selectedEventId, before: { status: ev.status }, after: { status: 'pending' } })
+            updateLocal(selectedEventId, 'pending')
+            await updateEventStatus(projectId, selectedEventId, 'pending')
+          }
+          break
       }
     }
 
     window.addEventListener('keydown', handler)
     // Remove listener on re-render (when selectedEventId or projectId changes)
     return () => window.removeEventListener('keydown', handler)
-  }, [projectId, selectedEventId, events, videoRef, stepMs, updateLocal, undo, redo, pushUndo])
+  }, [projectId, selectedEventId, events, videoRef, stepMs, updateLocal, undo, redo, pushUndo,
+      zoomLevel, setZoomLevel, resetZoomPan, selectEvent, drawingMode, setDrawingMode,
+      polygonDrawMode, setPolygonDrawMode, project])
 }

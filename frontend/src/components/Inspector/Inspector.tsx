@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Check, CircleDot, Redo2, Undo2, X } from 'lucide-react'
-import { bulkUpdateEventStatus, bulkUpdateEventStyle, copyExportTo, exportDownloadUrl, openScanProgressSocket, reportDownloadUrl, startExport, startScan, updateEventKeyframes, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
+import { addEventToProject, bulkUpdateEventStatus, bulkUpdateEventStyle, copyExportTo, deleteEvent, exportDownloadUrl, openScanProgressSocket, reportDownloadUrl, startExport, startScan, updateEventKeyframes, updateEventStatus, updateEventStyle, updateProjectSettings } from '../../api/client'
 import type { UndoAction } from '../../store/projectStore'
 import { useExportProgress } from '../../hooks/useExportProgress'
 import { useProjectStore } from '../../store/projectStore'
@@ -30,12 +30,13 @@ const STRENGTH_LABELS: Record<RedactionStyleType, string> = {
 }
 
 export function Inspector({ style }: Props) {
-  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification, pushUndo, canUndo, canRedo, undo, redo } = useProjectStore((s) => ({
+  const { project, events, selectedEventId, updateEventStatus: updateLocal, updateEvent, removeEvent, bulkUpdateEventStatus: bulkUpdateLocal, bulkUpdateEventStyle: bulkUpdateStyleLocal, scanProgress, setScanId, updateProjectSettingsLocal, addNotification, pushUndo, canUndo, canRedo, undo, redo } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
     selectedEventId: s.selectedEventId,
     updateEventStatus: s.updateEventStatus,
     updateEvent: s.updateEvent,
+    removeEvent: s.removeEvent,
     bulkUpdateEventStatus: s.bulkUpdateEventStatus,
     bulkUpdateEventStyle: s.bulkUpdateEventStyle,
     scanProgress: s.scanProgress,
@@ -51,6 +52,9 @@ export function Inspector({ style }: Props) {
 
   const { progress: exportProg, track: trackExport, reset: resetExport } = useExportProgress()
   const exportStartRef = useRef<number | null>(null)
+
+  // Delete finding confirmation state
+  const [showDeleteFinding, setShowDeleteFinding] = useState(false)
 
   // Quick Export state
   const [quickExportStatus, setQuickExportStatus] = useState<'idle' | 'scanning' | 'accepting' | 'exporting' | 'done' | 'error'>('idle')
@@ -92,6 +96,7 @@ export function Inspector({ style }: Props) {
   }, [project?.project_id, project?.scan_settings?.default_redaction_style])
 
   useEffect(() => {
+    setShowDeleteFinding(false)
     return () => {
       if (strengthTimer.current) clearTimeout(strengthTimer.current)
       if (colorTimer.current) clearTimeout(colorTimer.current)
@@ -241,7 +246,20 @@ export function Inspector({ style }: Props) {
     }
   }
 
-  const handleStatusChange = async (status: 'accepted' | 'rejected') => {
+  const handleDeleteFinding = async () => {
+    if (!project || !event) return
+    pushUndo({ type: 'delete_event', before: { event }, after: {} })
+    removeEvent(event.event_id)
+    setShowDeleteFinding(false)
+    try {
+      await deleteEvent(project.project_id, event.event_id)
+    } catch (err) {
+      console.error('Failed to delete finding:', err)
+      addNotification('Failed to delete finding', 'error')
+    }
+  }
+
+  const handleStatusChange = async (status: 'accepted' | 'rejected' | 'pending') => {
     if (!project || !event) return
     pushUndo({ type: 'status', eventId: event.event_id, before: { status: event.status }, after: { status } })
     updateLocal(event.event_id, status)
@@ -328,6 +346,22 @@ export function Inspector({ style }: Props) {
           }
         } else {
           await bulkUpdateEventStyle(pid, data.style, action.eventIds)
+        }
+        break
+      case 'add_event':
+        // Undo add = delete the event; Redo add = re-add it
+        if (snapshot === 'before') {
+          await deleteEvent(pid, action.after.event.event_id)
+        } else {
+          await addEventToProject(pid, action.after.event)
+        }
+        break
+      case 'delete_event':
+        // Undo delete = re-add the event; Redo delete = delete again
+        if (snapshot === 'before') {
+          await addEventToProject(pid, action.before.event)
+        } else {
+          await deleteEvent(pid, action.before.event.event_id)
         }
         break
     }
@@ -487,7 +521,7 @@ export function Inspector({ style }: Props) {
 
           <Field label="Detected text">
             <code style={{ fontSize: 'var(--font-size-small)', background: 'var(--bg)', padding: 'var(--space-1) var(--space-2)', borderRadius: 'var(--radius-sm)', display: 'block', wordBreak: 'break-all' }}>
-              {event.extracted_text ?? '[secure mode \u2014 not stored]'}
+              {event.extracted_text ?? '(text not stored)'}
             </code>
           </Field>
 
@@ -529,6 +563,20 @@ export function Inspector({ style }: Props) {
                 {event.status === 'accepted' ? <><Check size={16} /> Accepted</> : 'A \u2014 Accept'}
               </button>
               <button
+                onClick={() => handleStatusChange('pending')}
+                style={{
+                  flex: 1, opacity: event.status === 'pending' ? 1 : 0.55,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)',
+                  background: 'var(--glass-bg)',
+                  color: event.status === 'pending' ? 'var(--pending)' : 'var(--text-muted)',
+                  border: `1px solid ${event.status === 'pending' ? 'var(--pending)' : 'var(--border)'}`,
+                  borderRadius: 'var(--radius-md)', cursor: 'pointer', fontSize: 'var(--font-size-body)',
+                  padding: 'var(--space-2)',
+                }}
+              >
+                {event.status === 'pending' ? '● Pending' : 'P \u2014 Reset'}
+              </button>
+              <button
                 className="reject"
                 style={{ flex: 1, opacity: event.status === 'rejected' ? 1 : 0.55, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}
                 onClick={() => handleStatusChange('rejected')}
@@ -537,12 +585,96 @@ export function Inspector({ style }: Props) {
               </button>
             </div>
           </Field>
+
+          {/* Delete finding */}
+          <div style={{ marginTop: 'var(--space-2)', borderTop: '1px solid var(--border-hairline)', paddingTop: 'var(--space-4)' }}>
+            {showDeleteFinding ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+                <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>
+                  Remove this finding from the project? This can be undone with Ctrl+Z.
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                  <button className="secondary" onClick={() => setShowDeleteFinding(false)} style={{ flex: 1 }}>Cancel</button>
+                  <button
+                    onClick={handleDeleteFinding}
+                    style={{ flex: 1, background: 'var(--reject)', color: '#fff', border: 'none', borderRadius: 'var(--radius-md)', cursor: 'pointer', padding: 'var(--space-2)', fontSize: 'var(--font-size-body)' }}
+                  >
+                    Delete Finding
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="ghost"
+                onClick={() => setShowDeleteFinding(true)}
+                style={{ width: '100%', fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-1)' }}
+              >
+                <X size={13} /> Remove this finding
+              </button>
+            )}
+          </div>
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 'var(--space-6)', textAlign: 'center', gap: 'var(--space-2)' }}>
-          <CircleDot size={32} style={{ opacity: 0.3 }} />
-          <div style={{ fontSize: 'var(--font-size-body)' }}>No finding selected</div>
-          <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-disabled)' }}>Click a finding from the left panel to view details</div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4)' }}>
+          <div className="section-header" style={{ marginBottom: 'var(--space-4)' }}>
+            <span style={{ fontWeight: 600, fontSize: 'var(--font-size-section)' }}>Project Summary</span>
+          </div>
+
+          {project?.video ? (
+            <>
+              <Field label="Video">
+                <div style={{ fontSize: 'var(--font-size-small)' }}>
+                  {project.video.width}&times;{project.video.height} &middot; {project.video.fps.toFixed(0)} fps &middot; {project.video.codec}
+                </div>
+                <div style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)', marginTop: 2 }}>
+                  {formatMs(project.video.duration_ms)} duration
+                </div>
+              </Field>
+
+              <Field label="Findings">
+                {events.length === 0 ? (
+                  <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>None yet — run a scan to detect PII.</span>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-small)' }}>
+                      <span style={{ color: 'var(--pending)' }}>● Pending</span>
+                      <span>{events.filter((e) => e.status === 'pending').length}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-small)' }}>
+                      <span style={{ color: 'var(--accept)' }}>✓ Accepted</span>
+                      <span>{events.filter((e) => e.status === 'accepted').length}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-small)' }}>
+                      <span style={{ color: 'var(--reject)' }}>✕ Rejected</span>
+                      <span>{events.filter((e) => e.status === 'rejected').length}</span>
+                    </div>
+                  </div>
+                )}
+              </Field>
+            </>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--text-muted)', textAlign: 'center', padding: 'var(--space-4) 0' }}>
+              <CircleDot size={28} style={{ opacity: 0.3 }} />
+              <div style={{ fontSize: 'var(--font-size-small)' }}>No video imported</div>
+              <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-disabled)' }}>Use Import Video in the toolbar to get started.</div>
+            </div>
+          )}
+
+          <Field label="Created">
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>
+              {project ? new Date(project.created_at).toLocaleString() : '\u2014'}
+            </span>
+          </Field>
+
+          <Field label="Last modified">
+            <span style={{ fontSize: 'var(--font-size-small)', color: 'var(--text-muted)' }}>
+              {project ? new Date(project.updated_at).toLocaleString() : '\u2014'}
+            </span>
+          </Field>
+
+          <div style={{ marginTop: 'var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--text-disabled)', textAlign: 'center', fontStyle: 'italic' }}>
+            Select a finding from the left panel to view details
+          </div>
         </div>
       )}
 
@@ -578,9 +710,15 @@ export function Inspector({ style }: Props) {
         {[
           ['Space', 'Play / Pause'],
           ['J / L', 'Step \u00b15 s'],
+          [', / .', 'Step \u00b11 frame'],
           ['K', 'Pause'],
+          ['Home / End', 'Seek to start / end'],
           ['A', 'Accept selected'],
           ['R', 'Reject selected'],
+          ['P', 'Reset to pending'],
+          ['= / -', 'Zoom in / out'],
+          ['0', 'Reset zoom & pan'],
+          ['Esc', 'Exit draw / deselect'],
           ['Ctrl+Z', 'Undo'],
           ['Ctrl+Y', 'Redo'],
         ].map(([key, desc]) => (

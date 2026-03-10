@@ -129,6 +129,22 @@ export async function deleteProject(projectId: string): Promise<void> {
 }
 
 /**
+ * Rename a project.
+ */
+export async function renameProject(projectId: string, name: string): Promise<{ name: string }> {
+  const { data } = await api.patch(`/projects/${projectId}/name`, { name })
+  return data
+}
+
+/**
+ * Permanently remove a single RedactionEvent from the project.
+ * This operation is not reversible without undo.
+ */
+export async function deleteEvent(projectId: string, eventId: string): Promise<void> {
+  await api.delete(`/projects/${projectId}/events/${eventId}`)
+}
+
+/**
  * Append a single RedactionEvent to the project.
  * Used by the Frame Test modal to manually add a detected candidate.
  */
