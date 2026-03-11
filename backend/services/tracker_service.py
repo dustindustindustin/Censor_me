@@ -34,17 +34,22 @@ from backend.utils.scene_detect import compute_histogram, histogram_diff
 _DRIFT_THRESHOLD = 0.55
 
 # Drift must be detected for this many consecutive frames before tracking stops.
-# Prevents single-frame false-positive drift triggers.
-_DRIFT_CONFIRM_FRAMES = 3
+# 1 frame (was 3) — stop immediately when content scrolls away rather than
+# holding a stale position through the confirmation window.
+_DRIFT_CONFIRM_FRAMES = 1
 
 # Maximum frames to hold the last known bbox position on tracking failure.
-# Prevents single-frame unredacted gaps when CSRT briefly loses the target.
-_MAX_HOLD_FRAMES = 5
+# 2 frames (was 5) — keeps a brief gap-bridge without stale-position lag.
+_MAX_HOLD_FRAMES = 2
 
 # Blend the reference histogram every N frames to prevent staleness as content
 # appearance gradually changes (e.g., scrolling, lighting shifts).
 _REF_HIST_BLEND_INTERVAL = 15
-_REF_HIST_BLEND_ALPHA = 0.2
+_REF_HIST_BLEND_ALPHA = 0.4
+
+# Maximum number of CSRT trackers running simultaneously in track_all_events().
+# CSRT cost scales linearly with concurrent trackers; too many stalls the pipeline.
+_MAX_CONCURRENT_TRACKERS = 20
 
 
 def _create_csrt_tracker() -> cv2.Tracker:
@@ -311,7 +316,7 @@ class TrackerService:
         total_track_frames = last_frame - jobs[0].start_frame
         prev_scene_hist = None
 
-        while cap.isOpened() and (pending or active):
+        while cap.isOpened() and (pending or active) and frame_idx <= last_frame:
             ret, frame = cap.read()
             if not ret:
                 break
@@ -322,9 +327,17 @@ class TrackerService:
                              histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35)
             prev_scene_hist = curr_scene_hist
 
-            # Activate any jobs whose start_frame matches the current frame.
-            while pending and pending[0].start_frame == frame_idx:
+            # Activate jobs whose start_frame has been reached, up to the concurrency cap.
+            # Jobs that miss their exact start_frame (deferred by the cap) are initialized
+            # at the next available frame using their original OCR bbox.
+            # Jobs whose end_frame has already passed are discarded without tracking.
+            while pending and pending[0].start_frame <= frame_idx:
+                if len(active) >= _MAX_CONCURRENT_TRACKERS:
+                    break
                 job = pending.pop(0)
+                if job.end_frame <= frame_idx:
+                    # Passed this job's window entirely — nothing to track
+                    continue
                 x, y, w, h = job.start_bbox
                 tracker = _create_csrt_tracker()
                 tracker.init(frame, (x, y, w, h))
@@ -395,7 +408,7 @@ class TrackerService:
             del frame
             frame_idx += 1
 
-            if on_progress and total_track_frames > 0 and frame_idx % 30 == 0:
+            if on_progress and total_track_frames > 0 and frame_idx % 5 == 0:
                 elapsed = frame_idx - jobs[0].start_frame
                 time_ms = int((frame_idx / fps) * 1000)
                 on_progress(elapsed, total_track_frames, len(active), time_ms)

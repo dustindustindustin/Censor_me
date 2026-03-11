@@ -499,6 +499,17 @@ function ExportTab({
         </div>
       </Field>
 
+      <Field label="Format">
+        <select
+          value={output.container_format ?? 'mp4'}
+          onChange={(e) => onChange({ ...output, container_format: e.target.value })}
+        >
+          <option value="mp4">MP4 (.mp4)</option>
+          <option value="mov">MOV (.mov)</option>
+          <option value="mkv">MKV (.mkv)</option>
+        </select>
+      </Field>
+
       <Field label="Resolution">
         <select
           value={output.resolution}

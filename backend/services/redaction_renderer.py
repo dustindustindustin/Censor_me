@@ -39,7 +39,8 @@ _TEMPORAL_PAD_MS = 500
 
 # EMA smoothing alpha: controls how much each frame's bbox moves toward the raw
 # tracked position. Lower = smoother but laggier; higher = more responsive.
-_EMA_ALPHA = 0.3
+# 0.65 (was 0.3) — reduces visual trailing lag during fast-scrolling content.
+_EMA_ALPHA = 0.65
 
 # Merge proximity: bboxes within this many pixels of each other are merged into
 # a single redaction region to avoid thin uncensored strips between adjacent items.
@@ -71,10 +72,11 @@ class RedactionRenderer:
             Path to the output redacted video file.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{source_video.stem}_redacted.mp4"
+        ext = output_settings.container_format if hasattr(output_settings, "container_format") and output_settings.container_format else "mp4"
+        output_path = output_dir / f"{source_video.stem}_redacted.{ext}"
         # Write to a temp file; rename atomically on success to prevent serving
         # a corrupt/partial file if encoding fails or is interrupted mid-way.
-        tmp_path = output_path.with_suffix(".mp4.tmp")
+        tmp_path = output_path.parent / (output_path.name + ".tmp")
 
         # Get video properties
         cap = cv2.VideoCapture(str(source_video))
@@ -100,6 +102,7 @@ class RedactionRenderer:
             width=out_width,
             height=out_height,
             hw_encoder=hw_encoder if use_hw else None,
+            container_format=ext,
         )
 
         # Build frame-to-redaction lookup
@@ -210,6 +213,7 @@ class RedactionRenderer:
         width: int,
         height: int,
         hw_encoder: str | None,
+        container_format: str = "mp4",
     ) -> list[str]:
         """Construct the ffmpeg command for encoding.
 
@@ -265,9 +269,16 @@ class RedactionRenderer:
                 "-threads", "0",
             ]
 
+        # Map container_format to ffmpeg format name
+        _ffmpeg_format = {"mp4": "mp4", "mov": "mov", "mkv": "matroska"}.get(container_format, "mp4")
+        # movflags +faststart is only meaningful for MP4/MOV; skip for MKV
+        extra: list[str] = []
+        if container_format in ("mp4", "mov"):
+            extra = ["-movflags", "+faststart"]
         cmd += [
             "-acodec", "aac",
-            "-movflags", "+faststart",
+            *extra,
+            "-f", _ffmpeg_format,
             str(output_path),
         ]
 

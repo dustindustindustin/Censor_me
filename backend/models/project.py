@@ -95,6 +95,10 @@ class OutputSettings(BaseModel):
         if self.use_nvenc is not None:
             object.__setattr__(self, "use_hw_encoder", self.use_nvenc)
             object.__setattr__(self, "use_nvenc", None)
+    container_format: str = Field(
+        default="mp4",
+        description="Output container format. One of: 'mp4', 'mov', 'mkv'."
+    )
     watermark: bool = Field(
         default=False,
         description="Overlay a 'Redacted' watermark on the exported video."
@@ -114,9 +118,9 @@ class ScanSettings(BaseModel):
         description="Named preset that configures rules and sampling defaults."
     )
     ocr_sample_interval: int = Field(
-        default=5,
+        default=3,
         description=(
-            "Analyze 1 frame every N frames. At 30 fps, interval=5 gives 6 fps OCR. "
+            "Analyze 1 frame every N frames. At 30 fps, interval=3 gives 10 fps OCR. "
             "Lower values increase accuracy but slow down scanning."
         )
     )

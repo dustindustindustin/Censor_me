@@ -304,7 +304,7 @@ class ScanOrchestrator:
             for tr in evt.time_ranges:
                 start_f = int((tr.start_ms / 1000) * fps)
                 end_f = int((tr.end_ms / 1000) * fps)
-                for offset in range(1, 11):
+                for offset in range(1, 21):
                     bf = start_f - offset
                     if bf >= 0 and bf not in sampled_set:
                         boundary_frames.add(bf)
@@ -313,7 +313,7 @@ class ScanOrchestrator:
                         boundary_frames.add(ef)
 
         refine_frames = sorted(boundary_frames - sampled_set)
-        if 5 <= len(refine_frames) <= 500:
+        if len(refine_frames) >= 5:
             self._emit({"stage": "refining", "total_refine_frames": len(refine_frames)})
             refine_candidates = []
             cap2 = cv2.VideoCapture(str(video_path))

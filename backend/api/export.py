@@ -164,16 +164,19 @@ async def download_export(project_id: UUID):
     if not exports_dir.exists():
         raise HTTPException(status_code=404, detail="No exports found")
 
-    # Only serve completed (non-temp) files
-    exports = sorted(
-        [p for p in exports_dir.glob("*.mp4") if not p.name.endswith(".tmp")],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    # Only serve completed (non-temp) files across all supported formats
+    _EXPORT_EXTS = ("*.mp4", "*.mov", "*.mkv")
+    _MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "mkv": "video/x-matroska"}
+    all_exports: list = []
+    for pat in _EXPORT_EXTS:
+        all_exports.extend(p for p in exports_dir.glob(pat) if not p.name.endswith(".tmp"))
+    exports = sorted(all_exports, key=lambda p: p.stat().st_mtime, reverse=True)
     if not exports:
         raise HTTPException(status_code=404, detail="No export files found")
 
-    return FileResponse(exports[0], media_type="video/mp4", filename=exports[0].name)
+    latest = exports[0]
+    mime = _MIME.get(latest.suffix.lstrip("."), "video/mp4")
+    return FileResponse(latest, media_type=mime, filename=latest.name)
 
 
 class _CopyToRequest(BaseModel):
@@ -188,12 +191,12 @@ async def copy_export_to(project_id: UUID, body: _CopyToRequest):
     if not exports_dir.exists():
         raise HTTPException(status_code=404, detail="No exports found")
 
-    # Only copy completed (non-temp) files
-    exports = sorted(
-        [p for p in exports_dir.glob("*.mp4") if not p.name.endswith(".tmp")],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    # Only copy completed (non-temp) files across all supported formats
+    _EXPORT_EXTS = ("*.mp4", "*.mov", "*.mkv")
+    all_exports: list = []
+    for pat in _EXPORT_EXTS:
+        all_exports.extend(p for p in exports_dir.glob(pat) if not p.name.endswith(".tmp"))
+    exports = sorted(all_exports, key=lambda p: p.stat().st_mtime, reverse=True)
     if not exports:
         raise HTTPException(status_code=404, detail="No export files found")
 

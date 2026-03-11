@@ -207,6 +207,7 @@ export interface ScanSettings {
 
 export interface OutputSettings {
   codec: string
+  container_format: string
   resolution: string
   custom_width: number | null
   custom_height: number | null

@@ -216,6 +216,7 @@ export default function App() {
         }}
         defaultOutputSettings={{
           codec: 'h264',
+          container_format: 'mp4',
           resolution: 'original',
           custom_width: null,
           custom_height: null,
