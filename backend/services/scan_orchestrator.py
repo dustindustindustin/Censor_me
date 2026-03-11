@@ -313,6 +313,15 @@ class ScanOrchestrator:
                         boundary_frames.add(ef)
 
         refine_frames = sorted(boundary_frames - sampled_set)
+        # Cap total refinement work at a fixed budget. When there are many events
+        # the raw boundary set can reach thousands of frames — each needs a cap.set()
+        # seek + full OCR call, making refining take longer than the original scan.
+        # Subsample evenly so coverage is proportional across all event boundaries
+        # rather than just truncating (which would miss boundaries late in the video).
+        _MAX_REFINE_FRAMES = 300
+        if len(refine_frames) > _MAX_REFINE_FRAMES:
+            step = len(refine_frames) / _MAX_REFINE_FRAMES
+            refine_frames = [refine_frames[int(i * step)] for i in range(_MAX_REFINE_FRAMES)]
         if len(refine_frames) >= 5:
             self._emit({"stage": "refining", "total_refine_frames": len(refine_frames)})
             refine_candidates = []
