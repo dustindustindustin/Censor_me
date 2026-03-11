@@ -27,17 +27,22 @@ from pathlib import Path
 from typing import Callable
 
 import cv2
+import numpy as np
 
 from backend.models.events import PiiType, RedactionEvent
 
 logger = logging.getLogger(__name__)
 from backend.models.project import ProjectFile
 from backend.services.event_linker import link_candidates
-from backend.services.frame_sampler import FrameSampler
 from backend.services.ocr_service import OcrService
 from backend.services.pii_classifier import PiiClassifier
 from backend.services.tracker_service import TrackerService
 from backend.services.video_service import VideoService
+from backend.utils.scene_detect import is_scene_change
+
+# Per-pixel grayscale MAD threshold for motion/scroll detection —
+# mirrors the constant in frame_sampler.py.
+_MOTION_MAD_THRESHOLD = 8.0
 
 
 class ScanOrchestrator:
@@ -123,136 +128,175 @@ class ScanOrchestrator:
             video_path.name, interval, scale, confidence_threshold, self._use_gpu,
         )
 
-        # --- Stage 1: Plan adaptive frame sampling ---
-        # FrameSampler uses scene-change detection to insert burst sampling
-        # intervals around UI transitions, improving detection near scene cuts.
-        sampler = FrameSampler(
-            video_path,
-            base_interval=interval,
-            burst_frames=8,
-            burst_interval=max(1, interval // 2),
-        )
-        frame_indices = sampler.plan()
+        # --- Stages 1–3: Adaptive sampling + OCR + PII classification (single pass) ---
+        # Previously, FrameSampler.plan() decoded the full video once to build a frame
+        # list, then the OCR loop decoded it again using cap.set() seeks for each sample.
+        # This single sequential pass eliminates both the duplicate decode and the seek
+        # overhead: H.264 sequential decode is far cheaper than repeated random seeks.
+        _burst_frames = 8
+        _burst_interval = max(1, interval // 2)
 
-        # Filter to declared frame range if one was specified (range scan mode)
-        if self._frame_range:
-            start_f, end_f = self._frame_range
-            frame_indices = [f for f in frame_indices if start_f <= f <= end_f]
-
-        ocr_frame_count = len(frame_indices)
-
-        self._emit({"stage": "starting", "total_ocr_frames": ocr_frame_count})
-
-        # --- Eagerly warm up Presidio before the OCR loop ---
-        # _get_analyzer() loads the spaCy NLP model (~3–5 s). Warming it up here
-        # prevents the first OCR frame from stalling while the model initializes,
-        # and emits a meaningful stage label the frontend can display.
-        self._emit({"stage": "warming_up", "message": "Loading NLP models…"})
-        await asyncio.to_thread(self._classifier._get_analyzer)
-
-        # --- Stages 2–3: OCR + PII classification (combined per frame) ---
         all_candidates = []
+        sampled_set: set[int] = set()
         processed = 0
+        prev_gray: np.ndarray | None = None
+        prev_bgr: np.ndarray | None = None
+        burst_remaining = 0
+        next_sample_idx = 0
+        fps = float(metadata.fps) if metadata.fps and metadata.fps > 0 else 30.0
 
         cap = cv2.VideoCapture(str(video_path))
         try:
-            fps = cap.get(cv2.CAP_PROP_FPS) or metadata.fps
-            if not fps or fps <= 0:
-                logger.warning("Invalid FPS value (%.2f), defaulting to 30.0", fps or 0)
-                fps = 30.0
+            _cap_fps = cap.get(cv2.CAP_PROP_FPS)
+            if _cap_fps and _cap_fps > 0:
+                fps = _cap_fps
+            else:
+                logger.warning("Invalid FPS from cap (%.2f), using metadata fps %.2f", _cap_fps or 0, fps)
+            total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
 
-            for frame_idx in frame_indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            # Emit an estimated OCR frame count before the loop starts (the adaptive
+            # burst sampling adjusts the exact count at runtime, so this is approximate).
+            estimated_ocr_count = max(1, total_frames // interval)
+            self._emit({"stage": "starting", "total_ocr_frames": estimated_ocr_count})
+
+            # --- Eagerly warm up Presidio before the OCR loop ---
+            # _get_analyzer() loads the spaCy NLP model (~3–5 s). Warming it up here
+            # prevents the first OCR frame from stalling while the model initializes,
+            # and emits a meaningful stage label the frontend can display.
+            self._emit({"stage": "warming_up", "message": "Loading NLP models…"})
+            await asyncio.to_thread(self._classifier._get_analyzer)
+
+            # For range scans, seek once to the range start, then read sequentially.
+            # A single seek is negligible; per-frame seeks are what's expensive.
+            range_start = 0
+            range_end = total_frames - 1
+            if self._frame_range:
+                range_start, range_end = self._frame_range
+                if range_start > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, range_start)
+            next_sample_idx = range_start
+
+            current_idx = range_start
+            while current_idx <= range_end:
                 ret, frame = cap.read()
                 if not ret:
-                    continue
+                    break
 
-                if scale != 1.0:
-                    h, w = frame.shape[:2]
-                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                is_last_frame = (current_idx == total_frames - 1)
+                if current_idx == next_sample_idx or is_last_frame:
+                    frame_idx = current_idx
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-                time_ms = int((frame_idx / fps) * 1000)
+                    # Adaptive sampling: detect scene changes and motion to trigger
+                    # burst sampling (matches the FrameSampler logic).
+                    if prev_gray is not None:
+                        if is_scene_change(prev_bgr, frame):
+                            burst_remaining = _burst_frames
+                        elif burst_remaining == 0:
+                            mad = float(np.mean(
+                                np.abs(gray.astype(np.int16) - prev_gray.astype(np.int16))
+                            ))
+                            if mad >= _MOTION_MAD_THRESHOLD:
+                                burst_remaining = _burst_frames
+                    prev_gray = gray
+                    prev_bgr = frame
 
-                # Stage 2: detect text regions in this frame.
-                # Run in a thread pool — EasyOCR is CPU/GPU-bound and would block
-                # the asyncio event loop if called directly in a coroutine.
-                ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame)
+                    sampled_set.add(frame_idx)
 
-                # If the frame was scaled for OCR, convert bboxes back to source pixel
-                # coordinates so that keyframes, tracking, and the renderer all operate
-                # in the same coordinate space as the original video.
-                if scale != 1.0:
-                    from backend.services.ocr_service import BoxResult as _BoxResult
-                    ocr_results = [
-                        _BoxResult(
-                            bbox=(
-                                int(r.bbox[0] / scale),
-                                int(r.bbox[1] / scale),
-                                int(r.bbox[2] / scale),
-                                int(r.bbox[3] / scale),
-                            ),
-                            text=r.text,
-                            confidence=r.confidence,
+                    if burst_remaining > 0:
+                        next_sample_idx = frame_idx + _burst_interval
+                        burst_remaining -= 1
+                    else:
+                        next_sample_idx = frame_idx + interval
+
+                    # Stage 2: OCR. Scale frame for inference if requested, then
+                    # convert bboxes back to source-resolution coordinates.
+                    frame_for_ocr = frame
+                    if scale != 1.0:
+                        h, w = frame.shape[:2]
+                        frame_for_ocr = cv2.resize(frame, (int(w * scale), int(h * scale)))
+
+                    time_ms = int((frame_idx / fps) * 1000)
+                    ocr_results = await asyncio.to_thread(self._ocr.process_frame, frame_for_ocr)
+
+                    if scale != 1.0:
+                        from backend.services.ocr_service import BoxResult as _BoxResult
+                        ocr_results = [
+                            _BoxResult(
+                                bbox=(
+                                    int(r.bbox[0] / scale),
+                                    int(r.bbox[1] / scale),
+                                    int(r.bbox[2] / scale),
+                                    int(r.bbox[3] / scale),
+                                ),
+                                text=r.text,
+                                confidence=r.confidence,
+                            )
+                            for r in ocr_results
+                        ]
+                        del frame_for_ocr
+
+                    # Stage 3: classify detected text as PII or non-PII
+                    candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
+
+                    # Stage 3b: face detection (runs on the same frame as OCR)
+                    if self._detect_faces:
+                        if self._face_detector is None:
+                            from backend.services.face_detector import FaceDetector
+                            self._face_detector = FaceDetector()
+                        face_threshold = self._classifier._entity_overrides.get(
+                            "face", self._classifier._threshold
                         )
-                        for r in ocr_results
-                    ]
+                        face_results = await asyncio.to_thread(
+                            self._face_detector.detect_faces, frame, face_threshold
+                        )
+                        from backend.services.pii_classifier import PiiCandidate
+                        for fx, fy, fw, fh, fconf in face_results:
+                            candidates.append(PiiCandidate(
+                                text="[face]",
+                                pii_type=PiiType.FACE,
+                                confidence=fconf,
+                                bbox=(fx, fy, fw, fh),
+                                source_frame=frame_idx,
+                                source_time_ms=time_ms,
+                            ))
 
-                # Stage 3: classify detected text as PII or non-PII
-                candidates = self._classifier.classify(ocr_results, frame_idx, time_ms)
+                    all_candidates.extend(candidates)
+                    processed += 1
 
-                # Stage 3b: face detection (runs on the same frame as OCR)
-                if self._detect_faces:
-                    if self._face_detector is None:
-                        from backend.services.face_detector import FaceDetector
-                        self._face_detector = FaceDetector()
-                    face_threshold = self._classifier._entity_overrides.get(
-                        "face", self._classifier._threshold
-                    )
-                    face_results = await asyncio.to_thread(
-                        self._face_detector.detect_faces, frame, face_threshold
-                    )
-                    from backend.services.pii_classifier import PiiCandidate
-                    for fx, fy, fw, fh, fconf in face_results:
-                        candidates.append(PiiCandidate(
-                            text="[face]",
-                            pii_type=PiiType.FACE,
-                            confidence=fconf,
-                            bbox=(fx, fy, fw, fh),
-                            source_frame=frame_idx,
-                            source_time_ms=time_ms,
-                        ))
+                    # Periodically flush PyTorch's CUDA allocator cache to keep VRAM
+                    # usage stable across long scans on lower-VRAM GPUs (4–6 GB).
+                    if self._use_gpu and processed % 20 == 0:
+                        self._ocr.flush_gpu_cache()
 
-                all_candidates.extend(candidates)
-                del frame  # release 6–32 MB immediately; don't wait for GC
+                    self._emit({
+                        "stage": "ocr",
+                        "frame": frame_idx,
+                        "time_ms": time_ms,
+                        "ocr_boxes": len(ocr_results),
+                        "findings_so_far": len(all_candidates),
+                        "progress_pct": int((current_idx / range_end) * 100) if range_end > 0 else 100,
+                        # Bboxes of PII found on this frame — used by the frontend to seek
+                        # the video and draw a live scan preview with censor bars.
+                        "scan_boxes": [
+                            {
+                                "bbox": list(c.bbox),
+                                "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
+                            }
+                            for c in candidates
+                        ],
+                    })
 
-                processed += 1
+                    # Yield to the event loop so WebSocket messages are flushed
+                    # between frames. Without this, progress updates would only be
+                    # sent when the entire scan completes.
+                    await asyncio.sleep(0)
 
-                # Periodically flush PyTorch's CUDA allocator cache to keep VRAM
-                # usage stable across long scans on lower-VRAM GPUs (4–6 GB).
-                if self._use_gpu and processed % 20 == 0:
-                    self._ocr.flush_gpu_cache()
-                self._emit({
-                    "stage": "ocr",
-                    "frame": frame_idx,
-                    "time_ms": time_ms,
-                    "ocr_boxes": len(ocr_results),
-                    "findings_so_far": len(all_candidates),
-                    "progress_pct": int((processed / ocr_frame_count) * 100),
-                    # Bboxes of PII found on this frame — used by the frontend to seek
-                    # the video and draw a live scan preview with censor bars.
-                    "scan_boxes": [
-                        {
-                            "bbox": list(c.bbox),
-                            "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
-                        }
-                        for c in candidates
-                    ],
-                })
+                else:
+                    # Non-sampled frame: release the buffer immediately.
+                    del frame
 
-                # Yield to the event loop so that WebSocket messages can be flushed
-                # between frames. Without this, progress updates would only be sent
-                # when the entire scan completes (Python's async scheduler is cooperative).
-                await asyncio.sleep(0)
+                current_idx += 1
         finally:
             cap.release()
 
@@ -298,7 +342,7 @@ class ScanOrchestrator:
         # --- Stage 4.5: Boundary Refinement ---
         # Sample extra frames near detection boundaries to catch text that
         # appears/disappears between the regular sample interval.
-        sampled_set = set(frame_indices)
+        # sampled_set was built incrementally during the OCR pass above.
         boundary_frames: set[int] = set()
         for evt in events:
             for tr in evt.time_ranges:
