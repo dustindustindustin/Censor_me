@@ -12,10 +12,10 @@ Local, GPU-accelerated video PII redaction. Automatically detects and blurs sens
 
 1. **Import** a video (MP4, MOV, MKV, AVI, WebM)
 2. **Test Frame** — run OCR + PII detection on a single frame to verify detection before a full scan; results appear as a cyan overlay on the live video
-3. **Scan** — full OCR + PII detection runs on every sampled frame using your GPU
+3. **Scan** — full OCR + PII detection runs across every sampled frame using your GPU; sampling rate increases automatically during motion and scene changes
 4. **Review** findings in the panel — accept or reject each one (keyboard: `A` / `R`); click any box on the video to select it; resize boxes with drag handles
 5. **Draw** custom redaction boxes directly on the video; they auto-track the content forward
-6. **Export** a redacted H.264 video with all accepted regions blurred out
+6. **Export** a redacted video (MP4, MOV, or MKV) with all accepted regions blurred out
 
 All processing is local. No cloud, no API calls, no data leaves your machine.
 
@@ -30,7 +30,7 @@ All processing is local. No cloud, no API calls, no data leaves your machine.
 - Smart filtering: DATE_TIME, LOCATION, and URL entities excluded (too noisy for UI/intranet text)
 - Default confidence threshold 0.35 (tuned for screen recordings)
 - CSRT object tracking between sampled frames with drift detection and auto-reinitialize
-- Scene-change detection with adaptive sampling rate
+- Adaptive sampling: rate increases automatically on scene changes and during motion (scroll detection via frame MAD)
 - Face detection via OpenCV DNN (ResNet-10 SSD)
 - Three redaction styles: Gaussian blur, pixelate, and solid box (configurable per event)
 
@@ -47,7 +47,8 @@ All processing is local. No cloud, no API calls, no data leaves your machine.
 - Three-pane UI: Findings Panel · Video Preview · Inspector
 - HTTP range request support for smooth video seeking
 - Save/load projects as local JSON
-- NVENC hardware export (falls back to libx264 automatically)
+- NVENC / AMF / VideoToolbox hardware export (falls back to libx264 automatically)
+- Multi-format output: MP4, MOV, MKV (selectable in Settings)
 - Audit report generation (JSON + HTML)
 
 ### Rules
@@ -147,8 +148,16 @@ Backend API docs: **http://localhost:8010/docs**
 | `J` | Step back 5 seconds |
 | `K` | Pause |
 | `L` | Step forward 5 seconds |
+| `,` | Step back 1 frame |
+| `.` | Step forward 1 frame |
+| `Home` | Seek to start |
+| `End` | Seek to end |
 | `A` | Accept selected finding |
 | `R` | Reject selected finding |
+| `=` / `+` | Zoom in |
+| `-` | Zoom out |
+| `0` | Reset zoom and pan |
+| `Esc` | Exit draw mode / deselect |
 
 ---
 

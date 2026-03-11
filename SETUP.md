@@ -115,7 +115,6 @@ Censor_me/
 │   ├── main.py              # FastAPI entry point
 │   ├── config.py            # Project paths, locks
 │   ├── api/                 # REST + WebSocket endpoints
-│   ├── config.py            # Project paths, locks
 │   ├── services/            # Pipeline: OCR, PII, tracking, rendering, face detection
 │   ├── models/              # Pydantic data models
 │   └── utils/               # GPU detection, scene detection, startup
@@ -138,8 +137,9 @@ Censor_me/
 ## Running Tests
 
 ```bash
-# Backend
-VIRTUAL_ENV=".venv" pytest
+# Backend (activate venv first)
+.venv\Scripts\activate
+pytest
 
 # Frontend type-check
 cd frontend && pnpm exec tsc --noEmit

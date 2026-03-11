@@ -49,11 +49,14 @@ backend/
 ├── config.py            # Project paths, locks, settings
 ├── api/                 # REST endpoints + WebSocket
 ├── services/            # Core pipeline:
-│   ├── ocr_service.py   #   EasyOCR text detection
-│   ├── pii_service.py   #   Presidio PII detection
-│   ├── tracking_service.py # CSRT object tracking
-│   ├── render_service.py   # Blur/redaction rendering
-│   └── face_detection.py   # Face detection
+│   ├── ocr_service.py         #   EasyOCR text detection
+│   ├── pii_classifier.py      #   Presidio PII detection
+│   ├── scan_orchestrator.py   #   7-stage pipeline coordinator
+│   ├── frame_sampler.py       #   Adaptive + motion-aware frame sampling
+│   ├── tracker_service.py     #   CSRT object tracking
+│   ├── event_linker.py        #   Groups detections into time-linked events
+│   ├── redaction_renderer.py  #   Blur/redaction rendering + ffmpeg export
+│   └── face_detection.py      #   Face detection
 ├── models/              # Pydantic data models
 └── utils/               # GPU detection, scene detection, startup
 frontend/src/
