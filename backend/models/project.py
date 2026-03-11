@@ -156,7 +156,7 @@ class ScanSettings(BaseModel):
         )
     )
     detect_faces: bool = Field(
-        default=True,
+        default=False,
         description=(
             "When True, run face detection on each sampled frame in addition "
             "to OCR. Catches webcam overlays and profile pictures."
