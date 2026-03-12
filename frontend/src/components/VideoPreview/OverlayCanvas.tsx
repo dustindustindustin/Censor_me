@@ -84,7 +84,7 @@ function applyHandleDrag(
 
 // Match backend _BBOX_PAD_PCT and _TEMPORAL_PAD_MS for WYSIWYG preview
 const BBOX_PAD_PCT = 0.15
-const TEMPORAL_PAD_MS = 500
+const TEMPORAL_PAD_MS = 750
 
 function upsertKeyframe(keyframes: Keyframe[], timeMs: number, newBbox: BoundingBox): Keyframe[] {
   const existing = keyframes.find((kf) => kf.time_ms === timeMs)
@@ -247,12 +247,19 @@ export function OverlayCanvas({
         return
       }
 
-      const { currentTimeMs, events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, polygonDrawMode, isPaused, livePreviewMode } = propsRef.current
+      const { events, selectedEventId, showRedactions, testFrameOverlay, scanPreviewFrame, drawingMode, polygonDrawMode, isPaused, livePreviewMode } = propsRef.current
+      // Read currentTime directly from the video element each rAF frame for frame-accurate
+      // overlay positioning. The timeupdate event only fires ~4-5x/sec, which causes box
+      // positions to snap discretely. Falling back to propsRef when paused preserves correct
+      // time for mouse interactions (resize, move, draw) that fire synchronously on events.
+      const currentTimeMs = (video && !video.paused)
+        ? Math.floor(video.currentTime * 1000)
+        : propsRef.current.currentTimeMs
 
       const s = getScales()
       const containerRect = container.getBoundingClientRect()
-      canvas.width = containerRect.width
-      canvas.height = containerRect.height
+      if (canvas.width !== Math.round(containerRect.width)) canvas.width = Math.round(containerRect.width)
+      if (canvas.height !== Math.round(containerRect.height)) canvas.height = Math.round(containerRect.height)
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       if (s && video.videoWidth !== 0) {
@@ -614,8 +621,8 @@ export function OverlayCanvas({
       const containerRect = containerRef.current!.getBoundingClientRect()
       const ctx = canvas.getContext('2d')
       if (ctx) {
-        canvas.width = containerRect.width
-        canvas.height = containerRect.height
+        if (canvas.width !== Math.round(containerRect.width)) canvas.width = Math.round(containerRect.width)
+        if (canvas.height !== Math.round(containerRect.height)) canvas.height = Math.round(containerRect.height)
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         ctx.fillStyle = theme.accentFill
         ctx.fillRect(rx, ry, rw, rh)

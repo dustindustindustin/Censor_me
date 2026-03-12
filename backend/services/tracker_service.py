@@ -16,7 +16,7 @@ rather than continuing to cover the wrong region.
 
 Drift is measured using Bhattacharyya distance between grayscale histograms
 of the tracked region at initialization vs. the current frame.
-``_DRIFT_THRESHOLD = 0.68`` with ``_DRIFT_CONFIRM_FRAMES = 3`` consecutive-frame
+``_DRIFT_THRESHOLD = 0.82`` with ``_DRIFT_CONFIRM_FRAMES = 6`` consecutive-frame
 confirmation prevents premature tracking termination during scrolling.
 """
 
@@ -30,19 +30,23 @@ from backend.utils.scene_detect import compute_histogram, histogram_diff
 
 # Bhattacharyya histogram distance above which a tracker is considered to have
 # drifted off the original content. Range [0.0, 1.0]; 0.0 = identical histograms.
-# 0.68 (was 0.55) — scrolling content naturally changes the histogram as new pixels
-# enter the bbox; a lower threshold caused premature tracking termination mid-scroll.
-_DRIFT_THRESHOLD = 0.68
+# 0.82 (was 0.68) — as text scrolls, the background behind the tracked bbox changes,
+# raising the histogram distance even when the tracker is correctly following the text.
+# The previous 0.68 threshold caused false drift detection mid-scroll and stopped tracking
+# prematurely. 0.82 keeps the tracker alive through background change; real scene cuts
+# jump to near 1.0 and are still caught reliably.
+_DRIFT_THRESHOLD = 0.82
 
 # Drift must be detected for this many consecutive frames before tracking stops.
-# 3 frames (was 1) — require sustained divergence to avoid stopping on a single
-# noisy frame during a fast scroll.
-_DRIFT_CONFIRM_FRAMES = 3
+# 6 frames (was 3) — require 200ms of sustained divergence at 30fps to avoid stopping
+# on transients from scroll animations or fast content changes.
+_DRIFT_CONFIRM_FRAMES = 6
 
 # Maximum frames to hold the last known bbox position on tracking failure.
-# 5 frames (was 2) — provides a wider bridge across OCR sample gaps during fast scrolls,
-# reducing the keyframe gap that causes visual jumps on export.
-_MAX_HOLD_FRAMES = 5
+# 20 frames (was 5) — at 30fps this gives 667ms of tolerance, enough to bridge a
+# typical OCR sample gap when text is momentarily occluded or motion-blurred during
+# a fast scroll.
+_MAX_HOLD_FRAMES = 20
 
 # Blend the reference histogram every N frames to prevent staleness as content
 # appearance gradually changes (e.g., scrolling, lighting shifts).
@@ -225,15 +229,16 @@ class TrackerService:
 
         class _Job:
             __slots__ = ("job_id", "event_idx", "start_frame", "end_frame",
-                         "start_bbox", "start_kf", "result_keyframes")
+                         "start_bbox", "start_kf", "end_kf", "result_keyframes")
 
-            def __init__(self, job_id, event_idx, start_frame, end_frame, start_bbox, start_kf):
+            def __init__(self, job_id, event_idx, start_frame, end_frame, start_bbox, start_kf, end_kf):
                 self.job_id = job_id
                 self.event_idx = event_idx
                 self.start_frame = start_frame
                 self.end_frame = end_frame
                 self.start_bbox = start_bbox
                 self.start_kf = start_kf
+                self.end_kf = end_kf
                 self.result_keyframes: list[Keyframe] = [start_kf]
 
         # Build one job per consecutive keyframe pair per event.
@@ -254,6 +259,7 @@ class TrackerService:
                     end_frame=int((kf_e.time_ms / 1000) * fps),
                     start_bbox=(kf_s.bbox.x, kf_s.bbox.y, kf_s.bbox.w, kf_s.bbox.h),
                     start_kf=kf_s,
+                    end_kf=kf_e,
                 ))
 
         if not jobs:
@@ -373,9 +379,15 @@ class TrackerService:
             cap.release()
 
         # Merge job results back into events, sorting and deduplicating by time_ms.
+        # If tracking stopped before reaching the next OCR keyframe, append that keyframe
+        # as an anchor so the frontend's linear interpolator covers the remaining gap
+        # instead of leaving the region unredacted.
         event_kf_map: dict[int, list[Keyframe]] = {i: [] for i in trackable}
         for job in jobs:
-            event_kf_map[job.event_idx].extend(job.result_keyframes)
+            kfs = job.result_keyframes
+            if kfs and job.end_kf and kfs[-1].time_ms < job.end_kf.time_ms:
+                kfs.append(job.end_kf)
+            event_kf_map[job.event_idx].extend(kfs)
 
         for evt_idx in trackable:
             kfs = event_kf_map[evt_idx]

@@ -265,7 +265,23 @@ def _merge_nearby_events(events: list[RedactionEvent]) -> list[RedactionEvent]:
                 continue
             # Velocity is within scroll range — fall through to merge
 
-        # Merge ev into prev
+        # Merge ev into prev, bridging the keyframe gap with linear interpolation
+        # so the redaction bar has continuous coverage across the stitched span.
+        last_kf = prev.keyframes[-1]
+        first_kf = ev.keyframes[0]
+        gap_ms = first_kf.time_ms - last_kf.time_ms
+        if gap_ms > 200:
+            steps = max(2, gap_ms // 500)
+            for i in range(1, steps):
+                t = i / steps
+                interp_ms = int(last_kf.time_ms + gap_ms * t)
+                interp_bbox = BoundingBox(
+                    x=round(last_kf.bbox.x + (first_kf.bbox.x - last_kf.bbox.x) * t),
+                    y=round(last_kf.bbox.y + (first_kf.bbox.y - last_kf.bbox.y) * t),
+                    w=round(last_kf.bbox.w + (first_kf.bbox.w - last_kf.bbox.w) * t),
+                    h=round(last_kf.bbox.h + (first_kf.bbox.h - last_kf.bbox.h) * t),
+                )
+                prev.keyframes.append(Keyframe(time_ms=interp_ms, bbox=interp_bbox))
         prev.keyframes.extend(ev.keyframes)
         prev.keyframes.sort(key=lambda kf: kf.time_ms)
 
