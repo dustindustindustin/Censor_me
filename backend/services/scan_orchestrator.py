@@ -35,7 +35,6 @@ from backend.services.event_linker import link_candidates
 from backend.services.ocr_service import OcrService
 from backend.services.pii_classifier import PiiClassifier
 from backend.services.tracker_service import TrackerService
-from backend.services.video_service import VideoService
 from backend.utils.scene_detect import is_scene_change
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,6 @@ class ScanOrchestrator:
         self._use_gpu = use_gpu
         self._frame_range = frame_range
 
-        self._video_svc = VideoService()
         self._ocr = OcrService(use_gpu=use_gpu)
         self._classifier = PiiClassifier(
             confidence_threshold=project.scan_settings.confidence_threshold,

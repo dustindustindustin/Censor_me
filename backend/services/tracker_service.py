@@ -93,51 +93,6 @@ class TrackerService:
     a scene change, or drift is detected.
     """
 
-    def track_event(
-        self,
-        event: RedactionEvent,
-        video_path: str,
-        fps: float,
-    ) -> RedactionEvent:
-        """
-        Fill in dense keyframes for a RedactionEvent using CSRT tracking.
-
-        For each consecutive pair of OCR keyframes in ``event.keyframes``,
-        opens the source video, seeks to the first keyframe's position,
-        initializes a CSRT tracker, and runs it forward frame-by-frame until
-        the second keyframe is reached or tracking fails.
-
-        Modifies ``event.keyframes`` in place (replaces sparse OCR keyframes
-        with a dense sequence including interpolated positions).
-
-        Args:
-            event:      The RedactionEvent to track. Must have at least 2 keyframes.
-            video_path: Absolute path to the source video file.
-            fps:        Frames per second of the source video.
-
-        Returns:
-            The same ``event`` with a densified ``keyframes`` list.
-        """
-        if len(event.keyframes) < 2:
-            # Nothing to interpolate with a single keyframe
-            return event
-
-        cap = cv2.VideoCapture(video_path)
-        filled_keyframes: list[Keyframe] = []
-
-        try:
-            for i in range(len(event.keyframes) - 1):
-                kf_start = event.keyframes[i]
-                kf_end = event.keyframes[i + 1]
-                filled = self._track_segment(cap, fps, kf_start, kf_end)
-                filled_keyframes.extend(filled)
-        finally:
-            cap.release()
-
-        # Replace the original sparse keyframes with the dense tracked sequence
-        event.keyframes = filled_keyframes
-        return event
-
     def track_forward(
         self,
         event: RedactionEvent,
@@ -255,11 +210,9 @@ class TrackerService:
         Opens ``cv2.VideoCapture`` exactly once and processes every tracking job
         by reading frames sequentially from the first job's start frame to the
         last job's end frame. Active CSRT trackers are maintained in a dict and
-        updated each frame. This is O(1) video opens vs. the O(N_events) opens
-        that result from calling ``track_event()`` per event.
+        updated each frame — O(1) video opens regardless of event count.
 
-        Events with fewer than 2 keyframes are returned unchanged (same behaviour
-        as ``track_event()``).
+        Events with fewer than 2 keyframes are returned unchanged.
 
         Args:
             events:     All RedactionEvents to track.
