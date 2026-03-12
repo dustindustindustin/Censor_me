@@ -116,11 +116,13 @@ class OcrService:
         """
         enhanced = self._enhance_contrast(frame)
         results = self._run_ocr(enhanced)
+        del enhanced  # free before the upscale retry to reduce peak memory usage
 
         # Sparse result — retry at larger scale to catch small-font text
         if len(results) < 5:
             upscaled = cv2.resize(frame, None, fx=1.5, fy=1.5)
             enhanced_up = self._enhance_contrast(upscaled)
+            del upscaled
             try:
                 # scale_factor=1.5 so that returned bboxes are in original coordinates
                 up_results = self._run_ocr(enhanced_up, scale_factor=1.5)
@@ -130,7 +132,7 @@ class OcrService:
                     if r.text.lower() not in existing_texts:
                         results.append(r)
             finally:
-                del upscaled, enhanced_up  # free ~64 MB immediately on 4K source
+                del enhanced_up
 
         return results
 
@@ -170,7 +172,16 @@ class OcrService:
         """
         reader = _get_reader(self._use_gpu)
         # detail=1 returns (polygon, text, confidence) tuples
-        raw = reader.readtext(frame, detail=1)
+        try:
+            raw = reader.readtext(frame, detail=1)
+        except MemoryError:
+            h, w = frame.shape[:2]
+            logger.warning(
+                "EasyOCR ran out of memory on a %dx%d frame — skipping frame. "
+                "Consider reducing ocr_resolution_scale in scan settings.",
+                w, h,
+            )
+            return []
         results = []
 
         for (polygon, text, confidence) in raw:
