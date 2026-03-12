@@ -16,8 +16,8 @@ rather than continuing to cover the wrong region.
 
 Drift is measured using Bhattacharyya distance between grayscale histograms
 of the tracked region at initialization vs. the current frame.
-``_DRIFT_THRESHOLD = 0.55`` (softened from 0.45) with ``_DRIFT_CONFIRM_FRAMES = 3``
-consecutive-frame confirmation prevents premature tracking termination.
+``_DRIFT_THRESHOLD = 0.68`` with ``_DRIFT_CONFIRM_FRAMES = 3`` consecutive-frame
+confirmation prevents premature tracking termination during scrolling.
 """
 
 from typing import Callable
@@ -31,16 +31,19 @@ from backend.utils.scene_detect import compute_histogram, histogram_diff
 
 # Bhattacharyya histogram distance above which a tracker is considered to have
 # drifted off the original content. Range [0.0, 1.0]; 0.0 = identical histograms.
-_DRIFT_THRESHOLD = 0.55
+# 0.68 (was 0.55) — scrolling content naturally changes the histogram as new pixels
+# enter the bbox; a lower threshold caused premature tracking termination mid-scroll.
+_DRIFT_THRESHOLD = 0.68
 
 # Drift must be detected for this many consecutive frames before tracking stops.
-# 1 frame (was 3) — stop immediately when content scrolls away rather than
-# holding a stale position through the confirmation window.
-_DRIFT_CONFIRM_FRAMES = 1
+# 3 frames (was 1) — require sustained divergence to avoid stopping on a single
+# noisy frame during a fast scroll.
+_DRIFT_CONFIRM_FRAMES = 3
 
 # Maximum frames to hold the last known bbox position on tracking failure.
-# 2 frames (was 5) — keeps a brief gap-bridge without stale-position lag.
-_MAX_HOLD_FRAMES = 2
+# 5 frames (was 2) — provides a wider bridge across OCR sample gaps during fast scrolls,
+# reducing the keyframe gap that causes visual jumps on export.
+_MAX_HOLD_FRAMES = 5
 
 # Blend the reference histogram every N frames to prevent staleness as content
 # appearance gradually changes (e.g., scrolling, lighting shifts).
@@ -123,13 +126,14 @@ class TrackerService:
         cap = cv2.VideoCapture(video_path)
         filled_keyframes: list[Keyframe] = []
 
-        for i in range(len(event.keyframes) - 1):
-            kf_start = event.keyframes[i]
-            kf_end = event.keyframes[i + 1]
-            filled = self._track_segment(cap, fps, kf_start, kf_end)
-            filled_keyframes.extend(filled)
-
-        cap.release()
+        try:
+            for i in range(len(event.keyframes) - 1):
+                kf_start = event.keyframes[i]
+                kf_end = event.keyframes[i + 1]
+                filled = self._track_segment(cap, fps, kf_start, kf_end)
+                filled_keyframes.extend(filled)
+        finally:
+            cap.release()
 
         # Replace the original sparse keyframes with the dense tracked sequence
         event.keyframes = filled_keyframes
@@ -156,78 +160,78 @@ class TrackerService:
         start_frame = int((kf_start.time_ms / 1000) * fps)
 
         cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        ret, frame = cap.read()
-        if not ret:
-            cap.release()
-            return event
-
-        bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
-        tracker = _create_csrt_tracker()
-        tracker.init(frame, bbox_tuple)
-
-        roi = frame[
-            kf_start.bbox.y: kf_start.bbox.y + kf_start.bbox.h,
-            kf_start.bbox.x: kf_start.bbox.x + kf_start.bbox.w,
-        ]
-        ref_hist = self._compute_hist(roi)
-        prev_scene_hist = compute_histogram(frame)
-
-        filled: list[Keyframe] = [kf_start]
-        current_frame = start_frame + 1
-        hold_count = 0
-        drift_count = 0
-        last_good_bbox = bbox_tuple
-
-        while current_frame < total_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             ret, frame = cap.read()
             if not ret:
-                break
+                return event
 
-            # Scene change detection
-            curr_scene_hist = compute_histogram(frame)
-            if histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35:
-                break
-            prev_scene_hist = curr_scene_hist
+            bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
+            tracker = _create_csrt_tracker()
+            tracker.init(frame, bbox_tuple)
 
-            success, tracked_bbox = tracker.update(frame)
-            time_ms = int((current_frame / fps) * 1000)
+            roi = frame[
+                kf_start.bbox.y: kf_start.bbox.y + kf_start.bbox.h,
+                kf_start.bbox.x: kf_start.bbox.x + kf_start.bbox.w,
+            ]
+            ref_hist = self._compute_hist(roi)
+            prev_scene_hist = compute_histogram(frame)
 
-            if success:
-                x, y, w, h = [int(v) for v in tracked_bbox]
-                x, y = max(0, x), max(0, y)
+            filled: list[Keyframe] = [kf_start]
+            current_frame = start_frame + 1
+            hold_count = 0
+            drift_count = 0
+            last_good_bbox = bbox_tuple
 
-                roi = frame[y: y + h, x: x + w]
-                if roi.size > 0:
-                    curr_hist = self._compute_hist(roi)
-                    drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
-                    if drift > _DRIFT_THRESHOLD:
-                        drift_count += 1
-                        if drift_count >= _DRIFT_CONFIRM_FRAMES:
-                            break
-                    else:
-                        drift_count = 0
-
-                    # Rolling reference histogram blend
-                    frames_since_start = current_frame - start_frame
-                    if frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:
-                        ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist
-
-                hold_count = 0
-                last_good_bbox = (x, y, w, h)
-                filled.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
-            else:
-                hold_count += 1
-                if hold_count > _MAX_HOLD_FRAMES:
+            while current_frame < total_frames:
+                ret, frame = cap.read()
+                if not ret:
                     break
-                x, y, w, h = last_good_bbox
-                filled.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
 
-            current_frame += 1
+                # Scene change detection
+                curr_scene_hist = compute_histogram(frame)
+                if histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35:
+                    break
+                prev_scene_hist = curr_scene_hist
 
-        cap.release()
+                success, tracked_bbox = tracker.update(frame)
+                time_ms = int((current_frame / fps) * 1000)
+
+                if success:
+                    x, y, w, h = [int(v) for v in tracked_bbox]
+                    x, y = max(0, x), max(0, y)
+
+                    roi = frame[y: y + h, x: x + w]
+                    if roi.size > 0:
+                        curr_hist = self._compute_hist(roi)
+                        drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
+                        if drift > _DRIFT_THRESHOLD:
+                            drift_count += 1
+                            if drift_count >= _DRIFT_CONFIRM_FRAMES:
+                                break
+                        else:
+                            drift_count = 0
+
+                        # Rolling reference histogram blend
+                        frames_since_start = current_frame - start_frame
+                        if frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:
+                            ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist
+
+                    hold_count = 0
+                    last_good_bbox = (x, y, w, h)
+                    filled.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
+                else:
+                    hold_count += 1
+                    if hold_count > _MAX_HOLD_FRAMES:
+                        break
+                    x, y, w, h = last_good_bbox
+                    filled.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
+
+                current_frame += 1
+        finally:
+            cap.release()
 
         event.keyframes = filled
         if filled:
@@ -306,9 +310,10 @@ class TrackerService:
         jobs.sort(key=lambda j: j.start_frame)
 
         cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, jobs[0].start_frame)
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, jobs[0].start_frame)
 
-        pending = list(jobs)
+            pending = list(jobs)
         # active: job_id -> (tracker, ref_hist, _Job, fail_count, drift_count, last_bbox)
         active: dict[str, tuple] = {}
         frame_idx = jobs[0].start_frame
@@ -412,8 +417,8 @@ class TrackerService:
                 elapsed = frame_idx - jobs[0].start_frame
                 time_ms = int((frame_idx / fps) * 1000)
                 on_progress(elapsed, total_track_frames, len(active), time_ms)
-
-        cap.release()
+        finally:
+            cap.release()
 
         # Merge job results back into events, sorting and deduplicating by time_ms.
         event_kf_map: dict[int, list[Keyframe]] = {i: [] for i in trackable}
@@ -546,13 +551,12 @@ class TrackerService:
             return event
 
         cap = cv2.VideoCapture(video_path)
-
-        # Initialize tracker at the first keyframe
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        ret, frame = cap.read()
-        if not ret:
-            cap.release()
-            return event
+        try:
+            # Initialize tracker at the first keyframe
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            ret, frame = cap.read()
+            if not ret:
+                return event
 
         bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
         tracker = _create_csrt_tracker()
@@ -615,8 +619,8 @@ class TrackerService:
                 backward_kfs.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
 
             current_frame -= 1
-
-        cap.release()
+        finally:
+            cap.release()
 
         if backward_kfs:
             backward_kfs.reverse()

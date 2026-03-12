@@ -57,6 +57,7 @@ export function useScanProgress(scanId: string | null): void {
 
       ws.onerror = (err) => {
         console.error('Scan progress WebSocket error:', err)
+        updateScanProgress({ stage: 'error', message: 'Lost connection to scan progress stream' })
       }
 
       ws.onclose = (ev) => {

@@ -99,6 +99,11 @@ uv venv .venv --python 3.12
 VIRTUAL_ENV=".venv" uv pip install -e ".[dev]"
 VIRTUAL_ENV=".venv" uv pip install pip
 
+# PyTorch (required for OCR — run once, choose your platform):
+# Windows + CUDA GPU:   scripts\install-pytorch.ps1
+# Windows + CPU only:   scripts\install-pytorch.ps1 -cpu
+# Linux / macOS:        bash scripts/install-pytorch.sh
+
 # Frontend
 cd frontend && pnpm install && cd ..
 ```

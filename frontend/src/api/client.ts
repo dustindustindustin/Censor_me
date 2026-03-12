@@ -9,7 +9,7 @@
  */
 
 import axios from 'axios'
-import type { FrameTestResult, OutputSettings, Project, RedactionEvent, Rule, ScanSettings, SystemStatus } from '../types'
+import type { BatchJob, FrameTestResult, OutputSettings, Preset, Project, RedactionEvent, Rule, ScanSettings, SystemDiagnostics, SystemStatus } from '../types'
 
 // ── Dual-mode URL resolution ─────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ export async function getSystemStatus(): Promise<SystemStatus> {
  * Fetch detailed GPU diagnostics (VRAM, PyTorch, FFmpeg, system info).
  * Used by the GPU / Performance tab in Settings.
  */
-export async function getSystemDiagnostics(): Promise<any> {
+export async function getSystemDiagnostics(): Promise<SystemDiagnostics> {
   const { data } = await api.get('/system/diagnostics')
   return data
 }
@@ -435,12 +435,12 @@ export async function testRule(
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 
-export async function getPresets(): Promise<any[]> {
+export async function getPresets(): Promise<Preset[]> {
   const { data } = await api.get('/presets/')
   return data
 }
 
-export async function getPreset(presetId: string): Promise<any> {
+export async function getPreset(presetId: string): Promise<Preset> {
   const { data } = await api.get(`/presets/${presetId}`)
   return data
 }
@@ -546,13 +546,13 @@ export async function submitBatch(body: {
 }
 
 /** List all batch jobs (running and completed). */
-export async function listBatches(): Promise<any[]> {
+export async function listBatches(): Promise<BatchJob[]> {
   const { data } = await api.get('/batch/')
   return data
 }
 
 /** Get the current status of a batch job. */
-export async function getBatchStatus(batchId: string): Promise<any> {
+export async function getBatchStatus(batchId: string): Promise<BatchJob> {
   const { data } = await api.get(`/batch/${batchId}`)
   return data
 }

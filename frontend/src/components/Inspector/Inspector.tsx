@@ -101,7 +101,7 @@ export function Inspector({ style }: Props) {
   // navigating to the project list and back). App.tsx sets exportId in the store
   // when it detects an active export via getActiveExport() on project open.
   useEffect(() => {
-    if (exportId) track(exportId)
+    if (exportId) trackExport(exportId)
   }, []) // intentionally only runs on mount
 
   // Keep the store's exportId in sync with export lifecycle:

@@ -14,14 +14,20 @@ from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, R
 from backend.services.pii_classifier import PiiCandidate
 
 
-# Two detections are considered "the same region" if their bbox centers are within this many pixels
-_SPATIAL_TOLERANCE_PX = 50
+# Two detections are considered "the same region" if their bbox centers are within this many pixels.
+# Applied against the velocity-extrapolated expected position, not the raw last keyframe position.
+_SPATIAL_TOLERANCE_PX = 80
 
 # Gap between frames (ms) smaller than this threshold is bridged (same event continues)
 _TIME_GAP_THRESHOLD_MS = 4000  # 4 seconds — increased from 2s to reduce split events
 
 # IoU threshold for merging nearby events of the same PII type
 _MERGE_IOU_THRESHOLD = 0.3
+
+# In _merge_nearby_events, a secondary merge path allows same-type adjacent events with IoU=0
+# to merge if the positional change is consistent with a scroll speed at or below this limit.
+# 2000 px/s ≈ a very fast scroll on a 1080p screen; faster than this is likely separate content.
+_MAX_MERGE_VELOCITY_PX_S = 2000
 
 
 def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -114,10 +120,27 @@ def _find_matching_event(
         if candidate.source_time_ms - last_kf_time > _TIME_GAP_THRESHOLD_MS:
             continue
 
-        # Check spatial proximity to last keyframe
+        # Check spatial proximity, extrapolating the event's expected position using velocity.
+        # For scrolling content, text moves predictably between OCR samples. Checking against
+        # the raw last-keyframe position fails when text has scrolled >50px since the last sample.
         last_bbox = event.keyframes[-1].bbox
         last_center = _bbox_center((last_bbox.x, last_bbox.y, last_bbox.w, last_bbox.h))
-        if _center_distance(candidate_center, last_center) <= _SPATIAL_TOLERANCE_PX:
+
+        extrapolated_center = last_center
+        if len(event.keyframes) >= 2:
+            kf_prev = event.keyframes[-2]
+            kf_last = event.keyframes[-1]
+            dt = kf_last.time_ms - kf_prev.time_ms
+            if dt > 0:
+                elapsed = candidate.source_time_ms - kf_last.time_ms
+                vx = (kf_last.bbox.x - kf_prev.bbox.x) / dt
+                vy = (kf_last.bbox.y - kf_prev.bbox.y) / dt
+                extrapolated_center = (
+                    last_center[0] + vx * elapsed,
+                    last_center[1] + vy * elapsed,
+                )
+
+        if _center_distance(candidate_center, extrapolated_center) <= _SPATIAL_TOLERANCE_PX:
             return event
 
     return None
@@ -220,8 +243,21 @@ def _merge_nearby_events(events: list[RedactionEvent]) -> list[RedactionEvent]:
                 best_iou = max(best_iou, iou)
 
         if best_iou < _MERGE_IOU_THRESHOLD:
-            result.append(ev)
-            continue
+            # Secondary check: IoU is zero for scrolled text (different vertical position),
+            # but it's still the same content. Allow merge if the positional change between
+            # prev's last keyframe and ev's first keyframe is consistent with plausible scroll
+            # velocity. Faster than _MAX_MERGE_VELOCITY_PX_S → treat as separate content.
+            gap_ms = max(gap, 1)
+            last_kf = prev.keyframes[-1]
+            first_kf = ev.keyframes[0]
+            dx = first_kf.bbox.x - last_kf.bbox.x
+            dy = first_kf.bbox.y - last_kf.bbox.y
+            dist = (dx ** 2 + dy ** 2) ** 0.5
+            velocity_px_per_s = (dist / gap_ms) * 1000
+            if velocity_px_per_s > _MAX_MERGE_VELOCITY_PX_S:
+                result.append(ev)
+                continue
+            # Velocity is within scroll range — fall through to merge
 
         # Merge ev into prev
         prev.keyframes.extend(ev.keyframes)

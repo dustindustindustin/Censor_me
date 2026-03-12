@@ -300,6 +300,53 @@ export type ScanProgressEvent =
   | { stage: 'error'; message: string }
   | { stage: 'cancelled'; message: string }
 
+// ── System diagnostics ───────────────────────────────────────────────────────
+
+/** Detailed GPU, memory, and environment diagnostics from GET /system/diagnostics. */
+export interface SystemDiagnostics {
+  gpu: {
+    vendor: string
+    name: string | null
+    cuda: boolean
+    mps: boolean
+    rocm: boolean
+    nvenc: boolean
+    amf: boolean
+    videotoolbox: boolean
+  }
+  vram: {
+    total_mb: number | null
+    free_mb: number | null
+  } | null
+  pytorch: {
+    version: string
+    cuda_version: string | null
+    device: string
+  } | null
+  ffmpeg: {
+    path: string
+    version: string
+    encoders: string[]
+  } | null
+  system: {
+    os: string
+    python: string
+    cpu_count: number
+    ram_gb: number
+  }
+}
+
+// ── Presets ──────────────────────────────────────────────────────────────────
+
+/** A named configuration preset for scan settings. */
+export interface Preset {
+  preset_id: string
+  name: string
+  description?: string
+  category?: string
+  scan_settings: Partial<ScanSettings>
+}
+
 // ── Batch mode ───────────────────────────────────────────────────────────────
 
 export type BatchItemStatus = 'queued' | 'importing' | 'scanning' | 'exporting' | 'done' | 'error' | 'skipped'

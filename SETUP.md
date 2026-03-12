@@ -35,8 +35,27 @@ VIRTUAL_ENV=".venv" uv pip install -e ".[dev]"
 VIRTUAL_ENV=".venv" uv pip install pip
 ```
 
-> **Note:** On first startup, Presidio will automatically download `en_core_web_lg`
-> (~400 MB) for person-name detection. This only happens once; subsequent starts are instant.
+### 2b. Install PyTorch (required for OCR)
+
+EasyOCR depends on PyTorch, which must be installed separately using the provided scripts.
+Run **one** of the following once, after step 2:
+
+```bash
+# Windows — CUDA GPU (recommended if you have an NVIDIA GPU):
+scripts\install-pytorch.ps1
+
+# Windows — CPU only (no GPU):
+scripts\install-pytorch.ps1 -cpu
+
+# Linux / macOS:
+bash scripts/install-pytorch.sh
+```
+
+> **CPU-only note:** Without a CUDA GPU, OCR will run on CPU and be ~5–10× slower.
+> The app still works; scans just take longer.
+
+> **On first startup**, Presidio automatically downloads `en_core_web_lg` (~400 MB)
+> for person-name detection. This only happens once; subsequent starts are instant.
 
 ### 3. Install frontend dependencies
 

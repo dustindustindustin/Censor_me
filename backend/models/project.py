@@ -90,11 +90,6 @@ class OutputSettings(BaseModel):
     # Backward compat: accept use_nvenc from old project files
     use_nvenc: bool | None = Field(default=None, exclude=True)
 
-    def model_post_init(self, __context) -> None:
-        # Migrate old use_nvenc field into use_hw_encoder
-        if self.use_nvenc is not None:
-            object.__setattr__(self, "use_hw_encoder", self.use_nvenc)
-            object.__setattr__(self, "use_nvenc", None)
     container_format: str = Field(
         default="mp4",
         description="Output container format. One of: 'mp4', 'mov', 'mkv'."
@@ -103,6 +98,17 @@ class OutputSettings(BaseModel):
         default=False,
         description="Overlay a 'Redacted' watermark on the exported video."
     )
+
+    def model_post_init(self, __context) -> None:
+        """Migrate the legacy ``use_nvenc`` field to ``use_hw_encoder``.
+
+        Old project files saved before the rename still contain ``use_nvenc``.
+        Pydantic deserializes it into this private field; we copy its value into
+        ``use_hw_encoder`` so the rest of the codebase only deals with the new name.
+        """
+        if self.use_nvenc is not None:
+            object.__setattr__(self, "use_hw_encoder", self.use_nvenc)
+            object.__setattr__(self, "use_nvenc", None)
 
 
 class ScanSettings(BaseModel):

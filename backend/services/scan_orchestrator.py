@@ -95,6 +95,41 @@ class ScanOrchestrator:
         self._detect_faces = project.scan_settings.detect_faces
         self._face_detector = None
 
+    async def _detect_faces_in_frame(
+        self,
+        frame,
+        frame_idx: int,
+        time_ms: int,
+    ) -> list:
+        """Run face detection on a single frame and return PiiCandidate objects.
+
+        Lazily initializes the FaceDetector on first use. Returns an empty list
+        when face detection is disabled or no faces are found.
+        """
+        from backend.services.face_detector import FaceDetector
+        from backend.services.pii_classifier import PiiCandidate
+
+        if self._face_detector is None:
+            self._face_detector = FaceDetector()
+
+        face_threshold = self._classifier._entity_overrides.get(
+            "face", self._classifier._threshold
+        )
+        face_results = await asyncio.to_thread(
+            self._face_detector.detect_faces, frame, face_threshold
+        )
+        return [
+            PiiCandidate(
+                text="[face]",
+                pii_type=PiiType.FACE,
+                confidence=fconf,
+                bbox=(fx, fy, fw, fh),
+                source_frame=frame_idx,
+                source_time_ms=time_ms,
+            )
+            for fx, fy, fw, fh, fconf in face_results
+        ]
+
     async def run(self) -> list[RedactionEvent]:
         """
         Execute all pipeline stages and return the final list of RedactionEvents.
@@ -241,25 +276,8 @@ class ScanOrchestrator:
 
                     # Stage 3b: face detection (runs on the same frame as OCR)
                     if self._detect_faces:
-                        if self._face_detector is None:
-                            from backend.services.face_detector import FaceDetector
-                            self._face_detector = FaceDetector()
-                        face_threshold = self._classifier._entity_overrides.get(
-                            "face", self._classifier._threshold
-                        )
-                        face_results = await asyncio.to_thread(
-                            self._face_detector.detect_faces, frame, face_threshold
-                        )
-                        from backend.services.pii_classifier import PiiCandidate
-                        for fx, fy, fw, fh, fconf in face_results:
-                            candidates.append(PiiCandidate(
-                                text="[face]",
-                                pii_type=PiiType.FACE,
-                                confidence=fconf,
-                                bbox=(fx, fy, fw, fh),
-                                source_frame=frame_idx,
-                                source_time_ms=time_ms,
-                            ))
+                        face_candidates = await self._detect_faces_in_frame(frame, frame_idx, time_ms)
+                        candidates.extend(face_candidates)
 
                     all_candidates.extend(candidates)
                     processed += 1
@@ -397,23 +415,9 @@ class ScanOrchestrator:
 
                     candidates = self._classifier.classify(ocr_results, rf_idx, time_ms)
 
-                    if self._detect_faces and self._face_detector is not None:
-                        face_threshold = self._classifier._entity_overrides.get(
-                            "face", self._classifier._threshold
-                        )
-                        face_results = await asyncio.to_thread(
-                            self._face_detector.detect_faces, frame, face_threshold
-                        )
-                        from backend.services.pii_classifier import PiiCandidate
-                        for fx, fy, fw, fh, fconf in face_results:
-                            candidates.append(PiiCandidate(
-                                text="[face]",
-                                pii_type=PiiType.FACE,
-                                confidence=fconf,
-                                bbox=(fx, fy, fw, fh),
-                                source_frame=rf_idx,
-                                source_time_ms=time_ms,
-                            ))
+                    if self._detect_faces:
+                        face_candidates = await self._detect_faces_in_frame(frame, rf_idx, time_ms)
+                        candidates.extend(face_candidates)
 
                     refine_candidates.extend(candidates)
                     del frame

@@ -19,19 +19,24 @@ export function ToastContainer() {
   if (notifications.length === 0) return null
 
   return (
-    <div style={{
-      position: 'fixed',
-      bottom: 'var(--space-4)',
-      right: 'var(--space-4)',
-      zIndex: 9999,
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 'var(--space-2)',
-      maxWidth: 400,
-    }}>
+    <div
+      role="region"
+      aria-label="Notifications"
+      aria-live="polite"
+      style={{
+        position: 'fixed',
+        bottom: 'var(--space-4)',
+        right: 'var(--space-4)',
+        zIndex: 9999,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--space-2)',
+        maxWidth: 400,
+      }}>
       {notifications.map((n) => (
         <div
           key={n.id}
+          role="alert"
           onClick={() => dismissNotification(n.id)}
           style={{
             padding: 'var(--space-3) var(--space-4)',
