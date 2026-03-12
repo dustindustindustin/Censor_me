@@ -151,7 +151,11 @@ export default function App() {
             setInitMessage('Waiting for backend to start\u2026')
           }
           if (attempts > 30) {
-            setInitError('Backend is not responding. Try restarting the app.')
+            setInitError(
+              'Backend is not responding. Check that the backend server is running ' +
+              '(uvicorn backend.main:app --port 8010), verify PyTorch is installed ' +
+              '(scripts\\install-pytorch.ps1), and check the console for errors.'
+            )
             break
           }
         }
@@ -462,7 +466,9 @@ function ProjectSelector({ gpuDisplay, onOpen, onBatch }: ProjectSelectorProps) 
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    listProjects().then(setProjects).catch(console.error)
+    listProjects().then(setProjects).catch(() => {
+      setError('Failed to load projects — backend may be unavailable')
+    })
   }, [])
 
   useEffect(() => {

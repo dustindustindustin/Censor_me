@@ -22,6 +22,7 @@ from backend.config import PROJECTS_DIR, project_dir
 from backend.models.project import OutputSettings, ProjectFile
 from backend.services.redaction_renderer import RedactionRenderer
 from backend.services.report_service import ReportService
+from backend.utils.ffmpeg_path import get_ffmpeg_path
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +253,25 @@ async def _run_export(
         export["total_frames"] = total_frames
 
     try:
+        # Guard: accepted events must be non-empty (defense in depth; caller also checks)
+        if not accepted_events:
+            export["status"] = "error"
+            export["error"] = (
+                "No accepted findings. Accept at least one event before exporting, "
+                "or use Quick Export to auto-accept all."
+            )
+            return
+
+        # Guard: ffmpeg must be reachable before starting a potentially long encode
+        ffmpeg_bin = get_ffmpeg_path()
+        if ffmpeg_bin == "ffmpeg" and not shutil.which("ffmpeg"):
+            export["status"] = "error"
+            export["error"] = (
+                "FFmpeg not found. Install FFmpeg and add it to your PATH, "
+                "or set the FFMPEG_PATH environment variable."
+            )
+            return
+
         source_video = Path(project.video.path)
         if not source_video.is_file():
             raise ValueError(f"Source video not found: {source_video}")

@@ -22,6 +22,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Minimum OCR confidence to accept a text box. Lower than the default 0.3 to
+# catch genuine PII text in compressed/low-contrast screen recordings. The
+# Presidio NLP layer filters non-PII text afterward, so accepting more OCR
+# candidates at this stage improves recall without proportionally increasing
+# false positives in the final output.
+_OCR_MIN_CONFIDENCE = 0.25
+
 # Module-level singleton for the EasyOCR reader.
 # Initialized on first call to _get_reader(); shared for the process lifetime.
 _reader_instance = None
@@ -44,6 +51,7 @@ def _get_reader(use_gpu: bool):
     global _reader_instance
     if _reader_instance is None:
         import easyocr
+
         from backend.utils.model_paths import get_easyocr_model_dir
 
         kwargs: dict = {"lang_list": ["en"], "gpu": use_gpu, "verbose": False}
@@ -110,7 +118,7 @@ class OcrService:
         results = self._run_ocr(enhanced)
 
         # Sparse result — retry at larger scale to catch small-font text
-        if len(results) < 3:
+        if len(results) < 5:
             upscaled = cv2.resize(frame, None, fx=1.5, fy=1.5)
             enhanced_up = self._enhance_contrast(upscaled)
             try:
@@ -158,7 +166,7 @@ class OcrService:
                           returned bboxes are in original (pre-scale) coordinates.
 
         Returns:
-            List of ``BoxResult`` objects with confidence > 0.3.
+            List of ``BoxResult`` objects with confidence >= _OCR_MIN_CONFIDENCE.
         """
         reader = _get_reader(self._use_gpu)
         # detail=1 returns (polygon, text, confidence) tuples
@@ -166,7 +174,7 @@ class OcrService:
         results = []
 
         for (polygon, text, confidence) in raw:
-            if not text.strip() or confidence < 0.3:
+            if not text.strip() or confidence < _OCR_MIN_CONFIDENCE:
                 continue
 
             # EasyOCR returns polygon as [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
@@ -181,7 +189,7 @@ class OcrService:
                 w = int(w / scale_factor)
                 h = int(h / scale_factor)
 
-            results.append(BoxResult(bbox=(x, y, w, h), text=text.strip(), confidence=float(confidence)))
+            results.append(BoxResult(bbox=(x, y, w, h), text=text.strip(), confidence=float(confidence)))  # noqa: E501
 
         return results
 
@@ -200,10 +208,10 @@ class OcrService:
             Contrast-enhanced BGR frame with the same dimensions.
         """
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
+        l_channel, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-        merged = cv2.merge([l, a, b])
+        l_channel = clahe.apply(l_channel)
+        merged = cv2.merge([l_channel, a, b])
         result = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
-        del lab, l, a, b, merged
+        del lab, l_channel, a, b, merged
         return result

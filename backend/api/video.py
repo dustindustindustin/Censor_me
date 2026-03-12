@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.config import project_dir
-from backend.models.project import ProjectFile, VideoMetadata
+from backend.models.project import ProjectFile
 from backend.services.video_service import VideoService
 
 logger = logging.getLogger(__name__)
@@ -71,8 +71,12 @@ async def import_video(project_id: UUID, file: UploadFile):
 
     # Extract metadata and generate proxy
     svc = VideoService()
-    metadata = svc.get_metadata(video_path)
-    proxy_path = svc.generate_proxy(video_path, proj_dir)
+    try:
+        metadata = svc.get_metadata(video_path)
+        proxy_path = svc.generate_proxy(video_path, proj_dir)
+    except Exception as exc:
+        video_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"Video processing failed: {exc}")
 
     # Update project
     project = ProjectFile.load(proj_dir)
@@ -105,6 +109,10 @@ async def import_video_from_path(project_id: UUID, body: ImportPathRequest):
         raise HTTPException(status_code=404, detail="Project not found")
 
     video_path = Path(body.path)
+
+    if not video_path.is_absolute():
+        raise HTTPException(status_code=422, detail="File path must be absolute")
+
     if not video_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
 
@@ -146,6 +154,13 @@ async def serve_proxy(project_id: UUID, request: Request):
         raise HTTPException(status_code=404, detail="Proxy video not found. Import a video first.")
 
     proxy_path = Path(project.proxy_path)
+    try:
+        proxy_path.resolve().relative_to(proj_dir.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail="Proxy path is outside the project directory"
+        )
     file_size = proxy_path.stat().st_size
 
     range_header = request.headers.get("range")

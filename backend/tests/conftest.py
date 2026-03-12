@@ -1,8 +1,14 @@
 """Shared fixtures for Censor Me backend tests."""
 
-import pytest
 
-from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, RedactionEvent, RedactionStyle, TimeRange
+from backend.models.events import (
+    BoundingBox,
+    EventStatus,
+    Keyframe,
+    PiiType,
+    RedactionEvent,
+    TimeRange,
+)
 from backend.services.pii_classifier import PiiCandidate
 
 

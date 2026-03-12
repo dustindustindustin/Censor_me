@@ -456,6 +456,11 @@ export function VideoPreview({ videoRef, style }: Props) {
     if (inPoint === null || outPoint === null) return
     const start = Math.min(inPoint, outPoint)
     const end = Math.max(inPoint, outPoint)
+    const durationSec = Math.round((end - start) / 1000)
+    const confirmed = window.confirm(
+      `Scan ${formatMs(start)} → ${formatMs(end)} (${durationSec}s)? This may take several minutes.`
+    )
+    if (!confirmed) return
     try {
       const { scan_id } = await startRangeScan(project.project_id, start, end)
       setScanId(scan_id)

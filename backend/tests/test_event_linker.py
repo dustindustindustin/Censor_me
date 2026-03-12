@@ -6,7 +6,6 @@ from backend.models.events import BoundingBox, Keyframe, PiiType, TimeRange
 from backend.services.event_linker import _merge_nearby_events, link_candidates
 from backend.tests.conftest import make_candidate, make_event
 
-
 # ---------------------------------------------------------------------------
 # link_candidates — initial greedy linking
 # ---------------------------------------------------------------------------
@@ -20,14 +19,14 @@ class TestLinkCandidates:
 
     def test_two_candidates_at_same_position_merge(self):
         c1 = make_candidate(time_ms=0, bbox=(100, 100, 80, 20))
-        c2 = make_candidate(time_ms=100, bbox=(102, 101, 80, 20))  # 2px drift, well within tolerance
+        c2 = make_candidate(time_ms=100, bbox=(102, 101, 80, 20))  # 2px drift, well within tolerance  # noqa: E501
         events = link_candidates([c1, c2])
         assert len(events) == 1
         assert len(events[0].keyframes) == 2
 
     def test_two_candidates_different_positions_create_separate_events(self):
         c1 = make_candidate(time_ms=0, bbox=(100, 100, 80, 20))
-        c2 = make_candidate(time_ms=100, bbox=(600, 100, 80, 20))  # 500px apart — far beyond tolerance
+        c2 = make_candidate(time_ms=100, bbox=(600, 100, 80, 20))  # 500px apart — far beyond tolerance  # noqa: E501
         events = link_candidates([c1, c2])
         assert len(events) == 2
 

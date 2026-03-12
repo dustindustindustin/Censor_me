@@ -7,7 +7,6 @@ Outputs:
 """
 
 import html
-import json
 from datetime import datetime
 
 from backend.models.project import ProjectFile
@@ -39,7 +38,7 @@ class ReportService:
                     "pii_type": e.pii_type,
                     "confidence": e.confidence,
                     # extracted_text omitted in secure mode
-                    "extracted_text": e.extracted_text if not project.scan_settings.secure_mode else None,
+                    "extracted_text": e.extracted_text if not project.scan_settings.secure_mode else None,  # noqa: E501
                     "time_ranges": [
                         {"start_ms": r.start_ms, "end_ms": r.end_ms}
                         for r in e.time_ranges
@@ -74,7 +73,8 @@ class ReportService:
 <html>
 <head><title>Censor Me Audit Report — {project.name}</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; }}
+  body {{ font-family: system-ui, sans-serif; max-width: 900px;
+         margin: 40px auto; padding: 0 20px; }}
   table {{ width: 100%; border-collapse: collapse; }}
   th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid #ddd; }}
   th {{ background: #f5f5f5; }}

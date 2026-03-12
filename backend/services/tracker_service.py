@@ -28,7 +28,6 @@ import numpy as np
 from backend.models.events import BoundingBox, Keyframe, RedactionEvent
 from backend.utils.scene_detect import compute_histogram, histogram_diff
 
-
 # Bhattacharyya histogram distance above which a tracker is considered to have
 # drifted off the original content. Range [0.0, 1.0]; 0.0 = identical histograms.
 # 0.68 (was 0.55) — scrolling content naturally changes the histogram as new pixels
@@ -217,7 +216,7 @@ class TrackerService:
                         # Rolling reference histogram blend
                         frames_since_start = current_frame - start_frame
                         if frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:
-                            ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist
+                            ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist  # noqa: E501
 
                     hold_count = 0
                     last_good_bbox = (x, y, w, h)
@@ -239,7 +238,7 @@ class TrackerService:
                 event.time_ranges[0].end_ms = filled[-1].time_ms
             else:
                 from backend.models.events import TimeRange
-                event.time_ranges = [TimeRange(start_ms=kf_start.time_ms, end_ms=filled[-1].time_ms)]
+                event.time_ranges = [TimeRange(start_ms=kf_start.time_ms, end_ms=filled[-1].time_ms)]  # noqa: E501
 
         return event
 
@@ -314,109 +313,109 @@ class TrackerService:
             cap.set(cv2.CAP_PROP_POS_FRAMES, jobs[0].start_frame)
 
             pending = list(jobs)
-        # active: job_id -> (tracker, ref_hist, _Job, fail_count, drift_count, last_bbox)
-        active: dict[str, tuple] = {}
-        frame_idx = jobs[0].start_frame
-        last_frame = max(j.end_frame for j in jobs)
-        total_track_frames = last_frame - jobs[0].start_frame
-        prev_scene_hist = None
-
-        while cap.isOpened() and (pending or active) and frame_idx <= last_frame:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Scene change detection (once per frame, shared across all trackers)
-            curr_scene_hist = compute_histogram(frame)
-            scene_changed = (prev_scene_hist is not None and
-                             histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35)
-            prev_scene_hist = curr_scene_hist
-
-            # Activate jobs whose start_frame has been reached, up to the concurrency cap.
-            # Jobs that miss their exact start_frame (deferred by the cap) are initialized
-            # at the next available frame using their original OCR bbox.
-            # Jobs whose end_frame has already passed are discarded without tracking.
-            while pending and pending[0].start_frame <= frame_idx:
-                if len(active) >= _MAX_CONCURRENT_TRACKERS:
+            # active: job_id -> (tracker, ref_hist, _Job, fail_count, drift_count, last_bbox)
+            active: dict[str, tuple] = {}
+            frame_idx = jobs[0].start_frame
+            last_frame = max(j.end_frame for j in jobs)
+            total_track_frames = last_frame - jobs[0].start_frame
+            prev_scene_hist = None
+    
+            while cap.isOpened() and (pending or active) and frame_idx <= last_frame:
+                ret, frame = cap.read()
+                if not ret:
                     break
-                job = pending.pop(0)
-                if job.end_frame <= frame_idx:
-                    # Passed this job's window entirely — nothing to track
-                    continue
-                x, y, w, h = job.start_bbox
-                tracker = _create_csrt_tracker()
-                tracker.init(frame, (x, y, w, h))
-                ref_hist = self._compute_hist(frame[y:y + h, x:x + w])
-                active[job.job_id] = (tracker, ref_hist, job, 0, 0, job.start_bbox)
-
-            # On scene change, stop all active trackers cleanly
-            if scene_changed:
-                for job_id in list(active.keys()):
-                    active.pop(job_id)
-                frame_idx += 1
-                del frame
-                continue
-
-            # Update all active trackers and collect those that are done.
-            done_ids: list[str] = []
-            for job_id, (tracker, ref_hist, job, fail_count, drift_cnt, last_bbox) in list(active.items()):
-                ok, tracked_bbox = tracker.update(frame)
-                if not ok:
-                    fail_count += 1
-                    if fail_count > _MAX_HOLD_FRAMES:
-                        done_ids.append(job_id)
+    
+                # Scene change detection (once per frame, shared across all trackers)
+                curr_scene_hist = compute_histogram(frame)
+                scene_changed = (prev_scene_hist is not None and
+                                 histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35)
+                prev_scene_hist = curr_scene_hist
+    
+                # Activate jobs whose start_frame has been reached, up to the concurrency cap.
+                # Jobs that miss their exact start_frame (deferred by the cap) are initialized
+                # at the next available frame using their original OCR bbox.
+                # Jobs whose end_frame has already passed are discarded without tracking.
+                while pending and pending[0].start_frame <= frame_idx:
+                    if len(active) >= _MAX_CONCURRENT_TRACKERS:
+                        break
+                    job = pending.pop(0)
+                    if job.end_frame <= frame_idx:
+                        # Passed this job's window entirely — nothing to track
                         continue
-                    # Hold last known position
-                    x, y, w, h = last_bbox
+                    x, y, w, h = job.start_bbox
+                    tracker = _create_csrt_tracker()
+                    tracker.init(frame, (x, y, w, h))
+                    ref_hist = self._compute_hist(frame[y:y + h, x:x + w])
+                    active[job.job_id] = (tracker, ref_hist, job, 0, 0, job.start_bbox)
+    
+                # On scene change, stop all active trackers cleanly
+                if scene_changed:
+                    for job_id in list(active.keys()):
+                        active.pop(job_id)
+                    frame_idx += 1
+                    del frame
+                    continue
+    
+                # Update all active trackers and collect those that are done.
+                done_ids: list[str] = []
+                for job_id, (tracker, ref_hist, job, fail_count, drift_cnt, last_bbox) in list(active.items()):  # noqa: E501
+                    ok, tracked_bbox = tracker.update(frame)
+                    if not ok:
+                        fail_count += 1
+                        if fail_count > _MAX_HOLD_FRAMES:
+                            done_ids.append(job_id)
+                            continue
+                        # Hold last known position
+                        x, y, w, h = last_bbox
+                        time_ms = int((frame_idx / fps) * 1000)
+                        job.result_keyframes.append(
+                            Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))
+                        )
+                        active[job_id] = (tracker, ref_hist, job, fail_count, drift_cnt, last_bbox)
+                        if frame_idx >= job.end_frame:
+                            done_ids.append(job_id)
+                        continue
+    
+                    x, y, w, h = [int(v) for v in tracked_bbox]
+                    x, y = max(0, x), max(0, y)
+    
+                    roi = frame[y:y + h, x:x + w]
+                    if roi.size > 0:
+                        curr_hist = self._compute_hist(roi)
+                        drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
+                        if drift > _DRIFT_THRESHOLD:
+                            drift_cnt += 1
+                            if drift_cnt >= _DRIFT_CONFIRM_FRAMES:
+                                done_ids.append(job_id)
+                                continue
+                        else:
+                            drift_cnt = 0
+    
+                        # Rolling reference histogram blend
+                        frames_since_start = frame_idx - job.start_frame
+                        if frames_since_start > 0 and frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:  # noqa: E501
+                            ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist  # noqa: E501
+    
                     time_ms = int((frame_idx / fps) * 1000)
                     job.result_keyframes.append(
                         Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))
                     )
-                    active[job_id] = (tracker, ref_hist, job, fail_count, drift_cnt, last_bbox)
+                    last_bbox = (x, y, w, h)
+                    active[job_id] = (tracker, ref_hist, job, 0, drift_cnt, last_bbox)
+    
                     if frame_idx >= job.end_frame:
                         done_ids.append(job_id)
-                    continue
-
-                x, y, w, h = [int(v) for v in tracked_bbox]
-                x, y = max(0, x), max(0, y)
-
-                roi = frame[y:y + h, x:x + w]
-                if roi.size > 0:
-                    curr_hist = self._compute_hist(roi)
-                    drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
-                    if drift > _DRIFT_THRESHOLD:
-                        drift_cnt += 1
-                        if drift_cnt >= _DRIFT_CONFIRM_FRAMES:
-                            done_ids.append(job_id)
-                            continue
-                    else:
-                        drift_cnt = 0
-
-                    # Rolling reference histogram blend
-                    frames_since_start = frame_idx - job.start_frame
-                    if frames_since_start > 0 and frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:
-                        ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist
-
-                time_ms = int((frame_idx / fps) * 1000)
-                job.result_keyframes.append(
-                    Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))
-                )
-                last_bbox = (x, y, w, h)
-                active[job_id] = (tracker, ref_hist, job, 0, drift_cnt, last_bbox)
-
-                if frame_idx >= job.end_frame:
-                    done_ids.append(job_id)
-
-            for job_id in set(done_ids):
-                active.pop(job_id, None)
-
-            del frame
-            frame_idx += 1
-
-            if on_progress and total_track_frames > 0 and frame_idx % 5 == 0:
-                elapsed = frame_idx - jobs[0].start_frame
-                time_ms = int((frame_idx / fps) * 1000)
-                on_progress(elapsed, total_track_frames, len(active), time_ms)
+    
+                for job_id in set(done_ids):
+                    active.pop(job_id, None)
+    
+                del frame
+                frame_idx += 1
+    
+                if on_progress and total_track_frames > 0 and frame_idx % 5 == 0:
+                    elapsed = frame_idx - jobs[0].start_frame
+                    time_ms = int((frame_idx / fps) * 1000)
+                    on_progress(elapsed, total_track_frames, len(active), time_ms)
         finally:
             cap.release()
 
@@ -511,7 +510,7 @@ class TrackerService:
                     # Rolling reference histogram blend
                     frames_since_start = current_frame - start_frame
                     if frames_since_start % _REF_HIST_BLEND_INTERVAL == 0:
-                        ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist
+                        ref_hist = (1 - _REF_HIST_BLEND_ALPHA) * ref_hist + _REF_HIST_BLEND_ALPHA * curr_hist  # noqa: E501
 
                 hold_count = 0
                 last_good_bbox = (x, y, w, h)
@@ -558,67 +557,67 @@ class TrackerService:
             if not ret:
                 return event
 
-        bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
-        tracker = _create_csrt_tracker()
-        tracker.init(frame, bbox_tuple)
-
-        roi = frame[
-            kf_start.bbox.y: kf_start.bbox.y + kf_start.bbox.h,
-            kf_start.bbox.x: kf_start.bbox.x + kf_start.bbox.w,
-        ]
-        ref_hist = self._compute_hist(roi)
-        prev_scene_hist = compute_histogram(frame)
-
-        backward_kfs: list[Keyframe] = []
-        hold_count = 0
-        drift_count = 0
-        last_good_bbox = bbox_tuple
-
-        current_frame = start_frame - 1
-        while current_frame >= 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # Scene change detection
-            curr_scene_hist = compute_histogram(frame)
-            if histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35:
-                break
-            prev_scene_hist = curr_scene_hist
-
-            # Re-init tracker for backward step (CSRT can't step backward natively)
+            bbox_tuple = (kf_start.bbox.x, kf_start.bbox.y, kf_start.bbox.w, kf_start.bbox.h)
             tracker = _create_csrt_tracker()
-            tracker.init(frame, last_good_bbox)
-            success, tracked_bbox = tracker.update(frame)
-            time_ms = int((current_frame / fps) * 1000)
-
-            if success:
-                x, y, w, h = [int(v) for v in tracked_bbox]
-                x, y = max(0, x), max(0, y)
-
-                roi = frame[y: y + h, x: x + w]
-                if roi.size > 0:
-                    curr_hist = self._compute_hist(roi)
-                    drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
-                    if drift > _DRIFT_THRESHOLD:
-                        drift_count += 1
-                        if drift_count >= _DRIFT_CONFIRM_FRAMES:
-                            break
-                    else:
-                        drift_count = 0
-
-                hold_count = 0
-                last_good_bbox = (x, y, w, h)
-                backward_kfs.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
-            else:
-                hold_count += 1
-                if hold_count > _MAX_HOLD_FRAMES:
+            tracker.init(frame, bbox_tuple)
+    
+            roi = frame[
+                kf_start.bbox.y: kf_start.bbox.y + kf_start.bbox.h,
+                kf_start.bbox.x: kf_start.bbox.x + kf_start.bbox.w,
+            ]
+            ref_hist = self._compute_hist(roi)
+            prev_scene_hist = compute_histogram(frame)
+    
+            backward_kfs: list[Keyframe] = []
+            hold_count = 0
+            drift_count = 0
+            last_good_bbox = bbox_tuple
+    
+            current_frame = start_frame - 1
+            while current_frame >= 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
+                ret, frame = cap.read()
+                if not ret:
                     break
-                x, y, w, h = last_good_bbox
-                backward_kfs.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))
-
-            current_frame -= 1
+    
+                # Scene change detection
+                curr_scene_hist = compute_histogram(frame)
+                if histogram_diff(prev_scene_hist, curr_scene_hist) > 0.35:
+                    break
+                prev_scene_hist = curr_scene_hist
+    
+                # Re-init tracker for backward step (CSRT can't step backward natively)
+                tracker = _create_csrt_tracker()
+                tracker.init(frame, last_good_bbox)
+                success, tracked_bbox = tracker.update(frame)
+                time_ms = int((current_frame / fps) * 1000)
+    
+                if success:
+                    x, y, w, h = [int(v) for v in tracked_bbox]
+                    x, y = max(0, x), max(0, y)
+    
+                    roi = frame[y: y + h, x: x + w]
+                    if roi.size > 0:
+                        curr_hist = self._compute_hist(roi)
+                        drift = cv2.compareHist(ref_hist, curr_hist, cv2.HISTCMP_BHATTACHARYYA)
+                        if drift > _DRIFT_THRESHOLD:
+                            drift_count += 1
+                            if drift_count >= _DRIFT_CONFIRM_FRAMES:
+                                break
+                        else:
+                            drift_count = 0
+    
+                    hold_count = 0
+                    last_good_bbox = (x, y, w, h)
+                    backward_kfs.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))  # noqa: E501
+                else:
+                    hold_count += 1
+                    if hold_count > _MAX_HOLD_FRAMES:
+                        break
+                    x, y, w, h = last_good_bbox
+                    backward_kfs.append(Keyframe(time_ms=time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h)))  # noqa: E501
+    
+                current_frame -= 1
         finally:
             cap.release()
 

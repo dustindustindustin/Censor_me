@@ -531,6 +531,9 @@ export function Inspector({ style }: Props) {
                   : 'Quick Export'}
               </button>
             </div>
+            <div style={{ fontSize: 'var(--font-size-xsmall)', color: 'var(--text-muted)', marginTop: 4 }}>
+              Runs a full scan, accepts all findings, and exports in one step.
+            </div>
             {quickExportError && (
               <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--reject)', marginTop: 'var(--space-1)' }}>{quickExportError}</div>
             )}

@@ -1,10 +1,15 @@
 """Tests for pure helper functions in backend/services/redaction_renderer.py."""
 
-import pytest
 
-from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, RedactionEvent, TimeRange
+from backend.models.events import (
+    BoundingBox,
+    EventStatus,
+    Keyframe,
+    PiiType,
+    RedactionEvent,
+    TimeRange,
+)
 from backend.services.redaction_renderer import RedactionRenderer
-
 
 # ---------------------------------------------------------------------------
 # _lerp_bbox

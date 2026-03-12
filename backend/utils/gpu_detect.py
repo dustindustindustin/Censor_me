@@ -243,7 +243,7 @@ def _detect_amd_windows() -> tuple[bool, str | None]:
         if result.returncode == 0:
             for line in result.stdout.splitlines():
                 line = line.strip()
-                if line and line.lower() != "name" and ("amd" in line.lower() or "radeon" in line.lower()):
+                if line and line.lower() != "name" and ("amd" in line.lower() or "radeon" in line.lower()):  # noqa: E501
                     gpu_name = line
                     break
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -297,7 +297,7 @@ def detect_gpu() -> GpuInfo:
         )
     elif nvidia_hw_found:
         hw_encoder = "h264_nvenc" if _check_ffmpeg_encoder("h264_nvenc") else None
-        display = f"GPU: {nvidia_name} (CUDA not installed)" if nvidia_name else "GPU: NVIDIA (CUDA not installed)"
+        display = f"GPU: {nvidia_name} (CUDA not installed)" if nvidia_name else "GPU: NVIDIA (CUDA not installed)"  # noqa: E501
         logger.info("NVIDIA GPU found but CUDA torch not installed: %s", nvidia_name)
         return GpuInfo(
             gpu_vendor="nvidia",

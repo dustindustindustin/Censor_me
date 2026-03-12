@@ -17,15 +17,14 @@ from pathlib import Path
 from uuid import UUID
 
 import cv2
-
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from backend.api.rules import get_all_rules
-from backend.config import PROJECTS_DIR, get_project_lock, project_dir
+from backend.config import get_project_lock, project_dir
 from backend.models.project import ProjectFile
 from backend.services.scan_orchestrator import ScanOrchestrator
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -270,7 +269,7 @@ async def test_frame(project_id: UUID, request: Request, frame_index: int = 0):
 
         if not ret or frame is None:
             return {
-                "error": f"Could not read frame {safe_idx} from video (total frames: {total_frames})",
+                "error": f"Could not read frame {safe_idx} from video (total frames: {total_frames})",  # noqa: E501
                 "total_frames": total_frames,
                 "fps": fps,
             }
@@ -287,7 +286,12 @@ async def test_frame(project_id: UUID, request: Request, frame_index: int = 0):
         classifier_candidates = []
         try:
             from presidio_analyzer import AnalyzerEngine
-            from backend.services.pii_classifier import PiiClassifier, _PRESIDIO_TYPE_MAP, _PERSON_MIN_CHARS
+
+            from backend.services.pii_classifier import (
+                _PERSON_MIN_CHARS,
+                _PRESIDIO_TYPE_MAP,
+                PiiClassifier,
+            )
 
             separator = "\n"
             composite = ""
@@ -305,8 +309,8 @@ async def test_frame(project_id: UUID, request: Request, frame_index: int = 0):
                     skip_reason = f"entity type '{r.entity_type}' not in type map"
                 elif r.entity_type == "PERSON" and len(matched) < _PERSON_MIN_CHARS:
                     skip_reason = f"PERSON too short ({len(matched)} < {_PERSON_MIN_CHARS} chars)"
-                elif r.score < (project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold):
-                    effective = project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold
+                elif r.score < (project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold):  # noqa: E501
+                    effective = project.scan_settings.entity_confidence_overrides.get(mapped_type.value, threshold) if mapped_type else threshold  # noqa: E501
                     skip_reason = f"confidence {r.score:.2f} < threshold {effective:.2f}"
                 else:
                     skip_reason = None
@@ -329,7 +333,7 @@ async def test_frame(project_id: UUID, request: Request, frame_index: int = 0):
             classifier_candidates = [
                 {
                     "text": c.text,
-                    "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
+                    "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),  # noqa: E501
                     "confidence": round(c.confidence, 3),
                     "bbox": c.bbox,
                 }
@@ -442,7 +446,7 @@ async def scan_single_frame(project_id: UUID, request: Request, frame_index: int
     Returns:
         {"events": [...], "frame_index": N, "count": K}
     """
-    from backend.models.events import BoundingBox, EventStatus, Keyframe, RedactionEvent, TimeRange
+    from backend.models.events import BoundingBox, Keyframe, RedactionEvent, TimeRange
     from backend.services.ocr_service import OcrService
     from backend.services.pii_classifier import PiiClassifier
     from backend.services.tracker_service import TrackerService

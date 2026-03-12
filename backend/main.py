@@ -47,6 +47,16 @@ async def lifespan(app: FastAPI):
     app.state.init_stage = "starting"
     app.state.init_error = None
 
+    try:
+        import torch  # noqa: F401
+        app.state.torch_available = True
+    except ImportError:
+        app.state.torch_available = False
+        logger.warning(
+            "PyTorch not installed — EasyOCR will fail. "
+            "Run scripts/install-pytorch.ps1 (Windows) or scripts/install-pytorch.sh (Linux/macOS)."
+        )
+
     init_task = asyncio.create_task(_init_models_background(app))
 
     yield

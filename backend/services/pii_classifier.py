@@ -28,11 +28,10 @@ import logging
 import re
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
-
 from backend.models.events import PiiType
 from backend.services.ocr_service import BoxResult
 
+logger = logging.getLogger(__name__)
 
 # Maps Presidio entity type strings to the app's PiiType enum.
 # Only entity types listed here are kept — everything else is dropped.
@@ -143,7 +142,7 @@ class PiiClassifier:
                    (``type='context'`` or ``type='field_label'``) are kept
                    separately. Only enabled rules are stored.
         """
-        self._custom_rules = [r for r in rules if r.get("type") == "regex" and r.get("enabled", True)]
+        self._custom_rules = [r for r in rules if r.get("type") == "regex" and r.get("enabled", True)]  # noqa: E501
         self._context_rules = [
             r for r in rules
             if r.get("type") in ("context", "field_label") and r.get("enabled", True)
@@ -212,7 +211,7 @@ class PiiClassifier:
 
         logger.debug("Presidio returned %d results for frame %d (threshold=%.2f): %s",
                      len(results), frame_index, self._threshold,
-                     [(r.entity_type, round(r.score, 2), composite[r.start:r.end]) for r in results])
+                     [(r.entity_type, round(r.score, 2), composite[r.start:r.end]) for r in results])  # noqa: E501
 
         for result in results:
             # Only keep entity types explicitly in the map — drop everything else
@@ -277,7 +276,7 @@ class PiiClassifier:
             if len(pattern) > 500:
                 if rule_id not in self._warned_rules:
                     self._warned_rules.add(rule_id)
-                    logger.warning("Skipping rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)
+                    logger.warning("Skipping rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)  # noqa: E501
                 continue
 
             for box in ocr_results:
@@ -331,7 +330,7 @@ class PiiClassifier:
             if len(pattern) > 500:
                 if rule_id not in self._warned_rules:
                     self._warned_rules.add(rule_id)
-                    logger.warning("Skipping context rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)
+                    logger.warning("Skipping context rule %r: pattern exceeds 500 chars (ReDoS guard)", rule_id)  # noqa: E501
                 continue
 
             # Pass 1: identify label boxes that match the rule's pattern
@@ -343,7 +342,7 @@ class PiiClassifier:
                 except re.error as exc:
                     if rule_id not in self._warned_rules:
                         self._warned_rules.add(rule_id)
-                        logger.warning("Skipping context rule %r: malformed regex: %s", rule_id, exc)
+                        logger.warning("Skipping context rule %r: malformed regex: %s", rule_id, exc)  # noqa: E501
                     break  # don't retry this rule on other boxes
             else:
                 # Pass 2: for each label box, find adjacent value boxes

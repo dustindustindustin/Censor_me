@@ -123,9 +123,8 @@ class VideoService:
         frame without decoding the frames in between. This is ~5× faster than
         reading every frame and discarding non-sampled ones.
 
-        Note: ``FrameSampler.plan()`` pre-computes which frame indices to sample
-        (including scene-change burst intervals). This method is used as the
-        lower-level frame reader when a pre-planned list is not available.
+        Note: The scan orchestrator uses inline adaptive sampling. This method
+        is a lower-level frame reader for callers that need sequential frame access.
 
         Args:
             video_path: Source video file path.
@@ -139,26 +138,27 @@ class VideoService:
             - ``frame_array`` is a BGR numpy array.
         """
         cap = cv2.VideoCapture(str(video_path))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_idx = 0
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            frame_idx = 0
 
-        while frame_idx < total:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
-            if not ret:
-                break
+            while frame_idx < total:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            if scale != 1.0:
-                h, w = frame.shape[:2]
-                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                if scale != 1.0:
+                    h, w = frame.shape[:2]
+                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
 
-            time_ms = int((frame_idx / fps) * 1000)
-            yield frame_idx, time_ms, frame
+                time_ms = int((frame_idx / fps) * 1000)
+                yield frame_idx, time_ms, frame
 
-            frame_idx += interval
-
-        cap.release()
+                frame_idx += interval
+        finally:
+            cap.release()
 
     def _hash_file(self, path: Path, chunk_size: int = 65536) -> str:
         """

@@ -6,7 +6,7 @@ It runs all pipeline stages in sequence, emitting progress events after each
 frame so the frontend can update the timeline in real time via WebSocket.
 
 Pipeline stages (this module handles stages 1–5):
-  1. Sample  — FrameSampler determines which frames to OCR (adaptive sampling).
+  1. Sample  — Adaptive sampling determines which frames to OCR (inline motion/scene detection).
   2. OCR     — OcrService detects text regions in each sampled frame.
   3. Classify — PiiClassifier identifies PII in the detected text.
   4. Link    — EventLinker groups frame-level candidates into time-linked events.
@@ -30,8 +30,6 @@ import cv2
 import numpy as np
 
 from backend.models.events import PiiType, RedactionEvent
-
-logger = logging.getLogger(__name__)
 from backend.models.project import ProjectFile
 from backend.services.event_linker import link_candidates
 from backend.services.ocr_service import OcrService
@@ -40,8 +38,10 @@ from backend.services.tracker_service import TrackerService
 from backend.services.video_service import VideoService
 from backend.utils.scene_detect import is_scene_change
 
-# Per-pixel grayscale MAD threshold for motion/scroll detection —
-# mirrors the constant in frame_sampler.py.
+logger = logging.getLogger(__name__)
+
+# Per-pixel grayscale MAD threshold for motion/scroll detection.
+# Scrolling a typical UI generates a MAD of ~10–30; static screens stay below ~3.
 _MOTION_MAD_THRESHOLD = 8.0
 
 
@@ -159,7 +159,7 @@ class ScanOrchestrator:
         default_style = self._project.scan_settings.default_redaction_style
 
         logger.info(
-            "Scan starting — video: %s | interval: every %d frames | scale: %.1f | threshold: %.2f | GPU: %s",
+            "Scan starting — video: %s | interval: every %d frames | scale: %.1f | threshold: %.2f | GPU: %s",  # noqa: E501
             video_path.name, interval, scale, confidence_threshold, self._use_gpu,
         )
 
@@ -186,7 +186,7 @@ class ScanOrchestrator:
             if _cap_fps and _cap_fps > 0:
                 fps = _cap_fps
             else:
-                logger.warning("Invalid FPS from cap (%.2f), using metadata fps %.2f", _cap_fps or 0, fps)
+                logger.warning("Invalid FPS from cap (%.2f), using metadata fps %.2f", _cap_fps or 0, fps)  # noqa: E501
             total_frames = max(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
 
             # Emit an estimated OCR frame count before the loop starts (the adaptive
@@ -276,7 +276,7 @@ class ScanOrchestrator:
 
                     # Stage 3b: face detection (runs on the same frame as OCR)
                     if self._detect_faces:
-                        face_candidates = await self._detect_faces_in_frame(frame, frame_idx, time_ms)
+                        face_candidates = await self._detect_faces_in_frame(frame, frame_idx, time_ms)  # noqa: E501
                         candidates.extend(face_candidates)
 
                     all_candidates.extend(candidates)
@@ -293,13 +293,13 @@ class ScanOrchestrator:
                         "time_ms": time_ms,
                         "ocr_boxes": len(ocr_results),
                         "findings_so_far": len(all_candidates),
-                        "progress_pct": int((current_idx / range_end) * 100) if range_end > 0 else 100,
+                        "progress_pct": int((current_idx / range_end) * 100) if range_end > 0 else 100,  # noqa: E501
                         # Bboxes of PII found on this frame — used by the frontend to seek
                         # the video and draw a live scan preview with censor bars.
                         "scan_boxes": [
                             {
                                 "bbox": list(c.bbox),
-                                "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),
+                                "pii_type": c.pii_type.value if hasattr(c.pii_type, "value") else str(c.pii_type),  # noqa: E501
                             }
                             for c in candidates
                         ],
@@ -354,7 +354,7 @@ class ScanOrchestrator:
                 "progress_pct": min(pct, 100),
             })
 
-        events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)
+        events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)  # noqa: E501
         self._emit({"stage": "link_done", "events_found": len(events)})
 
         # --- Stage 4.5: Boundary Refinement ---
@@ -366,7 +366,7 @@ class ScanOrchestrator:
             for tr in evt.time_ranges:
                 start_f = int((tr.start_ms / 1000) * fps)
                 end_f = int((tr.end_ms / 1000) * fps)
-                for offset in range(1, 21):
+                for offset in range(1, 31):
                     bf = start_f - offset
                     if bf >= 0 and bf not in sampled_set:
                         boundary_frames.add(bf)
@@ -432,7 +432,7 @@ class ScanOrchestrator:
 
             if refine_candidates:
                 all_candidates.extend(refine_candidates)
-                events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)
+                events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)  # noqa: E501
                 self._emit({"stage": "refine_done", "events_found": len(events),
                              "extra_candidates": len(refine_candidates)})
 
@@ -442,7 +442,7 @@ class ScanOrchestrator:
         # per-event loop. For 50 events this is typically 10–50× faster.
         self._emit({"stage": "tracking", "total_events": len(events)})
 
-        def _track_progress(frames_done: int, total_frames: int, active_trackers: int, time_ms: int) -> None:
+        def _track_progress(frames_done: int, total_frames: int, active_trackers: int, time_ms: int) -> None:  # noqa: E501
             pct = int((frames_done / total_frames) * 100) if total_frames else 0
             self._emit({
                 "stage": "track",

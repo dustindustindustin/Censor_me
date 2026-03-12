@@ -42,8 +42,7 @@ def _model_dir() -> Path:
 
 
 def _download_file(url: str, dest: Path) -> None:
-    """Download a file from a URL to a local path, streaming to a temp file then atomically replacing."""
-    import hashlib
+    """Download a file from a URL to a local path, streaming to a temp file then atomically replacing."""  # noqa: E501
     import tempfile
     import urllib.request
     logger.info("Downloading face detector model file: %s", dest.name)

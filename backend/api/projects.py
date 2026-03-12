@@ -10,7 +10,6 @@ All projects live under ``PROJECTS_DIR`` (default: ``~/censor_me_projects/``).
 Each project gets its own sub-directory named after its UUID.
 """
 
-from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -77,7 +76,13 @@ async def get_project(project_id: UUID) -> ProjectFile:
     proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectFile.load(proj_dir)
+    try:
+        return ProjectFile.load(proj_dir)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Project file is corrupted and cannot be loaded: {exc}"
+        )
 
 
 @router.delete("/{project_id}")
@@ -255,7 +260,7 @@ async def update_settings(project_id: UUID, body: dict) -> ProjectFile:
     Body may contain ``scan_settings`` and/or ``output_settings`` keys, each
     being a partial object that is merged into the existing settings.
     """
-    from backend.models.project import ScanSettings, OutputSettings
+    from backend.models.project import OutputSettings, ScanSettings
 
     proj_dir = project_dir(str(project_id))
     if not proj_dir.exists():

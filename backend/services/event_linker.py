@@ -10,9 +10,15 @@ Output: list of RedactionEvent with time ranges and keyframes populated.
 
 from typing import Callable
 
-from backend.models.events import BoundingBox, EventStatus, Keyframe, PiiType, RedactionEvent, RedactionStyle, TimeRange
+from backend.models.events import (
+    BoundingBox,
+    EventStatus,
+    Keyframe,
+    RedactionEvent,
+    RedactionStyle,
+    TimeRange,
+)
 from backend.services.pii_classifier import PiiCandidate
-
 
 # Two detections are considered "the same region" if their bbox centers are within this many pixels.
 # Applied against the velocity-extrapolated expected position, not the raw last keyframe position.
@@ -146,7 +152,7 @@ def _find_matching_event(
     return None
 
 
-def _create_event(candidate: PiiCandidate, default_style: RedactionStyle | None = None) -> RedactionEvent:
+def _create_event(candidate: PiiCandidate, default_style: RedactionStyle | None = None) -> RedactionEvent:  # noqa: E501
     """Create a new RedactionEvent from a PII candidate."""
     x, y, w, h = candidate.bbox
     kwargs: dict = dict(
@@ -155,7 +161,7 @@ def _create_event(candidate: PiiCandidate, default_style: RedactionStyle | None 
         confidence=candidate.confidence,
         extracted_text=candidate.text,
         time_ranges=[TimeRange(start_ms=candidate.source_time_ms, end_ms=candidate.source_time_ms)],
-        keyframes=[Keyframe(time_ms=candidate.source_time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))],
+        keyframes=[Keyframe(time_ms=candidate.source_time_ms, bbox=BoundingBox(x=x, y=y, w=w, h=h))],  # noqa: E501
         status=EventStatus.PENDING,
     )
     if default_style is not None:
@@ -263,7 +269,7 @@ def _merge_nearby_events(events: list[RedactionEvent]) -> list[RedactionEvent]:
         prev.keyframes.extend(ev.keyframes)
         prev.keyframes.sort(key=lambda kf: kf.time_ms)
 
-        all_starts = [tr.start_ms for tr in prev.time_ranges] + [tr.start_ms for tr in ev.time_ranges]
+        all_starts = [tr.start_ms for tr in prev.time_ranges] + [tr.start_ms for tr in ev.time_ranges]  # noqa: E501
         all_ends = [tr.end_ms for tr in prev.time_ranges] + [tr.end_ms for tr in ev.time_ranges]
         prev.time_ranges = [TimeRange(start_ms=min(all_starts), end_ms=max(all_ends))]
         prev.confidence = max(prev.confidence, ev.confidence)

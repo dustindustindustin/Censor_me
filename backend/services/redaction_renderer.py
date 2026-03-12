@@ -30,12 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Bbox padding: expand each redaction box by this fraction of its size to catch
 # OCR boundary noise (text edges peeking around the censor box).
-_BBOX_PAD_PCT = 0.15
+_BBOX_PAD_PCT = 0.20
 
 # Temporal padding: extend redaction coverage before the first keyframe and
 # after the last keyframe by this many milliseconds, so the censor box appears
 # slightly before text is visible and lingers slightly after it disappears.
-_TEMPORAL_PAD_MS = 500
+_TEMPORAL_PAD_MS = 750
 
 # EMA smoothing alpha: controls how much each frame's bbox moves toward the raw
 # tracked position. Lower = smoother but laggier; higher = more responsive.
@@ -44,7 +44,7 @@ _EMA_ALPHA = 0.65
 
 # Merge proximity: bboxes within this many pixels of each other are merged into
 # a single redaction region to avoid thin uncensored strips between adjacent items.
-_MERGE_PROXIMITY_PX = 10
+_MERGE_PROXIMITY_PX = 15
 
 
 class RedactionRenderer:
@@ -72,7 +72,11 @@ class RedactionRenderer:
             Path to the output redacted video file.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        ext = output_settings.container_format if hasattr(output_settings, "container_format") and output_settings.container_format else "mp4"
+        ext = (
+            output_settings.container_format
+            if hasattr(output_settings, "container_format") and output_settings.container_format
+            else "mp4"
+        )
         output_path = output_dir / f"{source_video.stem}_redacted.{ext}"
         # Write to a temp file; rename atomically on success to prevent serving
         # a corrupt/partial file if encoding fails or is interrupted mid-way.
@@ -163,7 +167,9 @@ class RedactionRenderer:
                             )
                             if poly:
                                 poly = [[int(px * sx), int(py * sy)] for px, py in poly]
-                        frame = self._apply_redaction(frame, bbox, event.redaction_style, polygon=poly)
+                        frame = self._apply_redaction(
+                            frame, bbox, event.redaction_style, polygon=poly
+                        )
 
                 try:
                     proc.stdin.write(frame.tobytes())
@@ -202,6 +208,15 @@ class RedactionRenderer:
 
         # Atomically replace the final output path with the completed temp file
         tmp_path.replace(output_path)
+
+        # Verify the output is a valid, non-empty file
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                "Export produced an empty or missing output file. "
+                "Check that ffmpeg succeeded and the disk has sufficient space."
+            )
+
         return output_path
 
     def _build_ffmpeg_cmd(
@@ -270,7 +285,7 @@ class RedactionRenderer:
             ]
 
         # Map container_format to ffmpeg format name
-        _ffmpeg_format = {"mp4": "mp4", "mov": "mov", "mkv": "matroska"}.get(container_format, "mp4")
+        _ffmpeg_format = {"mp4": "mp4", "mov": "mov", "mkv": "matroska"}.get(container_format, "mp4")  # noqa: E501
         # movflags +faststart is only meaningful for MP4/MOV; skip for MKV
         extra: list[str] = []
         if container_format in ("mp4", "mov"):
@@ -343,7 +358,7 @@ class RedactionRenderer:
 
                     for step in range(1, steps):
                         interp_idx = frame_idx + step
-                        if self._in_time_ranges(interp_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                        if self._in_time_ranges(interp_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):  # noqa: E501
                             t = step / steps
                             interp = self._lerp_bbox(
                                 (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h),
@@ -362,7 +377,7 @@ class RedactionRenderer:
                                 interp_poly = poly  # hold polygon shape
                             if frame_w > 0 and frame_h > 0 and not interp_poly:
                                 interp = self._pad_bbox(interp, frame_w, frame_h)
-                            frame_map.setdefault(interp_idx, []).append((event, interp, interp_poly))
+                            frame_map.setdefault(interp_idx, []).append((event, interp, interp_poly))  # noqa: E501
 
             # --- Temporal pre-pad: hold first bbox before first keyframe ---
             first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
@@ -495,7 +510,7 @@ class RedactionRenderer:
                 for j in range(i + 1, len(result)):
                     if _close(result[i][1], result[j][1]):
                         union = _union(result[i][1], result[j][1])
-                        keep = result[i] if result[i][0].confidence >= result[j][0].confidence else result[j]
+                        keep = result[i] if result[i][0].confidence >= result[j][0].confidence else result[j]  # noqa: E501
                         poly = keep[2] if len(keep) > 2 else None
                         result[i] = (keep[0], union, poly)
                         result.pop(j)
@@ -541,7 +556,7 @@ class RedactionRenderer:
             small_w = max(1, roi.shape[1] // block)
             small_h = max(1, roi.shape[0] // block)
             small = cv2.resize(roi, (small_w, small_h))
-            redacted = cv2.resize(small, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_NEAREST)
+            redacted = cv2.resize(small, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_NEAREST)  # noqa: E501
 
         else:  # solid_box
             color_hex = getattr(style, "color", "#000000").lstrip("#")

@@ -68,6 +68,10 @@ export function useScanProgress(scanId: string | null): void {
         const attempt = retryCountRef.current
         if (attempt >= RECONNECT_DELAYS.length) {
           console.warn('Scan WebSocket: max reconnect attempts reached')
+          updateScanProgress({
+            stage: 'error',
+            message: 'Lost connection to scan. The scan may still be running — reload to check status.',
+          })
           return
         }
 

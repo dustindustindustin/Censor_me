@@ -80,7 +80,14 @@ export function useExportProgress(): {
     wsRef.current = ws
 
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any
+      try {
+        data = JSON.parse(event.data)
+      } catch {
+        console.error('Failed to parse export progress message:', event.data)
+        return
+      }
 
       if (data.stage === 'encoding') {
         setProgress((p) => ({

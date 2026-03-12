@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from backend.api.rules import get_all_rules
-from backend.config import PROJECTS_DIR, get_project_lock, project_dir
-from backend.models.project import ProjectFile, OutputSettings, ScanSettings
+from backend.config import get_project_lock, project_dir
+from backend.models.project import OutputSettings, ProjectFile, ScanSettings
 from backend.services.scan_orchestrator import ScanOrchestrator
 from backend.services.video_service import VideoService
 
@@ -59,7 +59,7 @@ class BatchJob:
                 "filename": Path(p).name,
                 "video_path": p,
                 "project_id": None,
-                "status": "queued",  # queued | importing | scanning | exporting | done | error | skipped
+                "status": "queued",  # queued | importing | scanning | exporting | done | error | skipped  # noqa: E501
                 "error": None,
                 "events_found": 0,
                 "scan_pct": 0,
@@ -291,7 +291,7 @@ async def _run_batch(job: BatchJob, use_gpu: bool) -> None:
             })
 
         except Exception as e:
-            logger.exception("Batch %s: video %d (%s) failed: %s", job.batch_id, idx, item["filename"], e)
+            logger.exception("Batch %s: video %d (%s) failed: %s", job.batch_id, idx, item["filename"], e)  # noqa: E501
             item["status"] = "error"
             item["error"] = str(e)
             # Clean up the orphaned project directory to prevent accumulation of

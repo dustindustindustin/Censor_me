@@ -6,10 +6,9 @@ import os
 import platform
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket
 
 from backend.utils.ffmpeg_path import get_ffmpeg_path
 
@@ -29,9 +28,11 @@ async def get_system_status(request: Request):
     gpu = getattr(request.app.state, "gpu", None)
     ready = getattr(request.app.state, "ready", False)
     stage = getattr(request.app.state, "init_stage", "starting")
+    torch_available = getattr(request.app.state, "torch_available", None)
     return {
         "ready": ready,
         "stage": stage,
+        "torch_available": torch_available,
         "gpu": {
             "gpu_vendor": gpu.gpu_vendor if gpu else "none",
             "gpu_name": gpu.gpu_name if gpu else None,
@@ -63,7 +64,7 @@ def _get_vram_info() -> dict | None:
             }
         # Apple MPS — limited memory introspection
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            allocated = torch.mps.current_allocated_memory() if hasattr(torch.mps, "current_allocated_memory") else 0
+            allocated = torch.mps.current_allocated_memory() if hasattr(torch.mps, "current_allocated_memory") else 0  # noqa: E501
             return {
                 "total_mb": None,
                 "allocated_mb": round(allocated / 1024 / 1024),
@@ -82,7 +83,7 @@ def _get_pytorch_info() -> dict | None:
         return {
             "version": torch.__version__,
             "cuda_version": torch.version.cuda if hasattr(torch.version, "cuda") else None,
-            "cudnn_version": str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else None,
+            "cudnn_version": str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else None,  # noqa: E501
             "hip_version": getattr(torch.version, "hip", None),
         }
     except ImportError:

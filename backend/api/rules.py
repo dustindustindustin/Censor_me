@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from backend.config import PROJECTS_DIR
-from backend.models.rules import Rule, RuleSet, RuleUpdate
+from backend.models.rules import Rule, RuleUpdate
 
 MAX_PATTERN_LEN = 500
 MAX_SAMPLE_LEN = 10_000
@@ -268,9 +268,9 @@ async def update_custom_rule(rule_id: str, body: RuleUpdate) -> dict:
 async def test_rule(pattern: str, sample_text: str) -> dict:
     """Test a regex pattern against sample text."""
     if len(pattern) > MAX_PATTERN_LEN:
-        raise HTTPException(status_code=422, detail=f"Pattern too long (max {MAX_PATTERN_LEN} chars)")
+        raise HTTPException(status_code=422, detail=f"Pattern too long (max {MAX_PATTERN_LEN} chars)")  # noqa: E501
     if len(sample_text) > MAX_SAMPLE_LEN:
-        raise HTTPException(status_code=422, detail=f"Sample text too long (max {MAX_SAMPLE_LEN} chars)")
+        raise HTTPException(status_code=422, detail=f"Sample text too long (max {MAX_SAMPLE_LEN} chars)")  # noqa: E501
 
     try:
         compiled = re.compile(pattern)
