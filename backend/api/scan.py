@@ -12,7 +12,6 @@ import json
 import logging
 import time
 import uuid
-from collections import deque
 from pathlib import Path
 from uuid import UUID
 
@@ -96,7 +95,7 @@ async def start_scan(project_id: UUID, request: Request):
         _active_scans[scan_id] = {
             "project_id": pid,
             "status": "queued",
-            "progress": deque(maxlen=500),
+            "progress": [],
             "created_at": now,
             "task": None,
         }
@@ -144,7 +143,6 @@ async def scan_progress_ws(websocket: WebSocket, scan_id: str):
         while scan["status"] not in ("done", "error", "cancelled"):
             progress = scan["progress"]
             current_len = len(progress)
-            # If the bounded deque evicted items, reset to avoid stale indices
             if last_sent > current_len:
                 last_sent = 0
             if current_len > last_sent:
@@ -571,7 +569,7 @@ async def start_range_scan(project_id: UUID, request: Request, start_ms: int = 0
         _active_scans[scan_id] = {
             "project_id": pid,
             "status": "queued",
-            "progress": deque(maxlen=500),
+            "progress": [],
             "created_at": time.time(),
             "task": None,
         }
