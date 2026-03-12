@@ -68,10 +68,16 @@ async def _init_easyocr(use_gpu: bool) -> None:
 
 
 def _load_presidio_sync() -> None:
-    """Synchronous Presidio+spaCy load — called via asyncio.to_thread."""
+    """Synchronous Presidio+spaCy load — called via asyncio.to_thread.
+
+    Stores the created AnalyzerEngine in the module-level singleton in
+    pii_classifier so that scans reuse the already-loaded engine instead
+    of constructing a second one.
+    """
     from presidio_analyzer import AnalyzerEngine
     from presidio_analyzer.nlp_engine import NlpEngineProvider
 
+    import backend.services.pii_classifier as _clf
     from backend.utils.model_paths import get_spacy_model_path
 
     model_path = get_spacy_model_path()
@@ -82,9 +88,11 @@ def _load_presidio_sync() -> None:
             "models": [{"lang_code": "en", "model_name": model_path}],
         }
         provider = NlpEngineProvider(nlp_configuration=config)
-        AnalyzerEngine(nlp_engine=provider.create_engine())
+        engine = AnalyzerEngine(nlp_engine=provider.create_engine())
     else:
-        AnalyzerEngine()
+        engine = AnalyzerEngine()
+
+    _clf._analyzer_instance = engine
 
 
 async def _init_presidio() -> None:

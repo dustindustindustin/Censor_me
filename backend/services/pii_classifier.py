@@ -33,6 +33,11 @@ from backend.services.ocr_service import BoxResult
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton for the Presidio AnalyzerEngine.
+# Initialized on first call to _get_analyzer(); shared for the process lifetime.
+# Mirrors the _reader_instance pattern in ocr_service.py.
+_analyzer_instance = None
+
 # Maps Presidio entity type strings to the app's PiiType enum.
 # Only entity types listed here are kept — everything else is dropped.
 _PRESIDIO_TYPE_MAP: dict[str, PiiType] = {
@@ -115,14 +120,18 @@ class PiiClassifier:
         """
         Return the Presidio AnalyzerEngine, initializing it on first call.
 
+        Uses a module-level singleton so the engine is shared across all
+        PiiClassifier instances and scans, and startup warm-up is reused.
+
         Raises RuntimeError if initialization fails so the caller (scan pipeline)
         can surface a clear error rather than silently returning no findings.
         """
-        if self._analyzer is None:
+        global _analyzer_instance
+        if _analyzer_instance is None:
             try:
                 from presidio_analyzer import AnalyzerEngine
-                logger.info("Initializing Presidio AnalyzerEngine (first scan frame)…")
-                self._analyzer = AnalyzerEngine()
+                logger.info("Initializing Presidio AnalyzerEngine…")
+                _analyzer_instance = AnalyzerEngine()
                 logger.info("Presidio AnalyzerEngine ready.")
             except Exception as e:
                 raise RuntimeError(
@@ -130,7 +139,8 @@ class PiiClassifier:
                     "Ensure presidio-analyzer is installed and the spaCy model is present. "
                     "Run: python -m spacy download en_core_web_lg"
                 ) from e
-        return self._analyzer
+        self._analyzer = _analyzer_instance
+        return _analyzer_instance
 
     def set_custom_rules(self, rules: list[dict]) -> None:
         """
