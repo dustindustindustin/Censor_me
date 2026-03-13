@@ -21,30 +21,10 @@ from backend.models.events import (
 from backend.services.pii_classifier import PiiCandidate
 
 # Two detections are considered "the same region" if their bbox centers are within this many pixels.
-# Applied against the velocity-extrapolated expected position, not the raw last keyframe position.
 _SPATIAL_TOLERANCE_PX = 80
 
 # Gap between frames (ms) smaller than this threshold is bridged (same event continues)
 _TIME_GAP_THRESHOLD_MS = 4000  # 4 seconds — increased from 2s to reduce split events
-
-# IoU threshold for merging nearby events of the same PII type
-_MERGE_IOU_THRESHOLD = 0.3
-
-# In _merge_nearby_events, a secondary merge path allows same-type adjacent events with IoU=0
-# to merge if the positional change is consistent with a scroll speed at or below this limit.
-# 2000 px/s ≈ a very fast scroll on a 1080p screen; faster than this is likely separate content.
-_MAX_MERGE_VELOCITY_PX_S = 2000
-
-
-def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
-    """Compute Intersection over Union of two (x, y, w, h) bounding boxes."""
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    inter_x = max(0, min(ax + aw, bx + bw) - max(ax, bx))
-    inter_y = max(0, min(ay + ah, by + bh) - max(ay, by))
-    inter = inter_x * inter_y
-    union = aw * ah + bw * bh - inter
-    return inter / union if union > 0 else 0
 
 
 def _bbox_center(bbox: tuple[int, int, int, int]) -> tuple[float, float]:
@@ -86,11 +66,6 @@ def link_candidates(
     if on_progress:
         on_progress(total, total)
 
-    # Post-merge pass: combine events of the same PII type that overlap spatially
-    # and are close in time but were linked separately (e.g., same text that briefly
-    # disappeared and reappeared beyond the gap threshold during initial linking).
-    events = _merge_nearby_events(events)
-
     return sorted(events, key=lambda e: e.time_ranges[0].start_ms if e.time_ranges else 0)
 
 
@@ -126,27 +101,11 @@ def _find_matching_event(
         if candidate.source_time_ms - last_kf_time > _TIME_GAP_THRESHOLD_MS:
             continue
 
-        # Check spatial proximity, extrapolating the event's expected position using velocity.
-        # For scrolling content, text moves predictably between OCR samples. Checking against
-        # the raw last-keyframe position fails when text has scrolled >50px since the last sample.
+        # Check spatial proximity against the raw last keyframe center.
         last_bbox = event.keyframes[-1].bbox
         last_center = _bbox_center((last_bbox.x, last_bbox.y, last_bbox.w, last_bbox.h))
 
-        extrapolated_center = last_center
-        if len(event.keyframes) >= 2:
-            kf_prev = event.keyframes[-2]
-            kf_last = event.keyframes[-1]
-            dt = kf_last.time_ms - kf_prev.time_ms
-            if dt > 0:
-                elapsed = candidate.source_time_ms - kf_last.time_ms
-                vx = (kf_last.bbox.x - kf_prev.bbox.x) / dt
-                vy = (kf_last.bbox.y - kf_prev.bbox.y) / dt
-                extrapolated_center = (
-                    last_center[0] + vx * elapsed,
-                    last_center[1] + vy * elapsed,
-                )
-
-        if _center_distance(candidate_center, extrapolated_center) <= _SPATIAL_TOLERANCE_PX:
+        if _center_distance(candidate_center, last_center) <= _SPATIAL_TOLERANCE_PX:
             return event
 
     return None
@@ -190,104 +149,3 @@ def _extend_event(event: RedactionEvent, candidate: PiiCandidate) -> None:
     event.confidence = max(event.confidence, candidate.confidence)
 
 
-def _merge_nearby_events(events: list[RedactionEvent]) -> list[RedactionEvent]:
-    """
-    Post-linking merge: combine events of the same PII type that are close in
-    time and overlap spatially (IoU > threshold). This catches cases where the
-    same text briefly disappears and reappears, creating separate events that
-    should logically be one continuous redaction.
-
-    Algorithm: O(N log N) single greedy pass after sorting by (pii_type, start_ms).
-    Two events can only merge if they are the same type and temporally adjacent,
-    so sorting eliminates all cross-type and temporally-distant comparisons.
-    """
-    if len(events) < 2:
-        return events
-
-    def _event_start(e: RedactionEvent) -> int:
-        return min((tr.start_ms for tr in e.time_ranges), default=0)
-
-    def _event_end(e: RedactionEvent) -> int:
-        return max((tr.end_ms for tr in e.time_ranges), default=0)
-
-    # Sort by pii_type then start time so mergeable candidates are adjacent
-    events.sort(key=lambda e: (str(e.pii_type), _event_start(e)))
-
-    result: list[RedactionEvent] = []
-
-    for ev in events:
-        if not result:
-            result.append(ev)
-            continue
-
-        prev = result[-1]
-
-        # Different PII type → never merge
-        if prev.pii_type != ev.pii_type:
-            result.append(ev)
-            continue
-
-        # Time gap check — only the immediately preceding event needs to be checked
-        # because the list is sorted by start time
-        gap = _event_start(ev) - _event_end(prev)
-        if gap > _TIME_GAP_THRESHOLD_MS:
-            result.append(ev)
-            continue
-
-        # Spatial overlap check using boundary keyframes
-        if not prev.keyframes or not ev.keyframes:
-            result.append(ev)
-            continue
-
-        best_iou = 0.0
-        for kf_a in [prev.keyframes[0], prev.keyframes[-1]]:
-            for kf_b in [ev.keyframes[0], ev.keyframes[-1]]:
-                iou = _bbox_iou(
-                    (kf_a.bbox.x, kf_a.bbox.y, kf_a.bbox.w, kf_a.bbox.h),
-                    (kf_b.bbox.x, kf_b.bbox.y, kf_b.bbox.w, kf_b.bbox.h),
-                )
-                best_iou = max(best_iou, iou)
-
-        if best_iou < _MERGE_IOU_THRESHOLD:
-            # Secondary check: IoU is zero for scrolled text (different vertical position),
-            # but it's still the same content. Allow merge if the positional change between
-            # prev's last keyframe and ev's first keyframe is consistent with plausible scroll
-            # velocity. Faster than _MAX_MERGE_VELOCITY_PX_S → treat as separate content.
-            gap_ms = max(gap, 1)
-            last_kf = prev.keyframes[-1]
-            first_kf = ev.keyframes[0]
-            dx = first_kf.bbox.x - last_kf.bbox.x
-            dy = first_kf.bbox.y - last_kf.bbox.y
-            dist = (dx ** 2 + dy ** 2) ** 0.5
-            velocity_px_per_s = (dist / gap_ms) * 1000
-            if velocity_px_per_s > _MAX_MERGE_VELOCITY_PX_S:
-                result.append(ev)
-                continue
-            # Velocity is within scroll range — fall through to merge
-
-        # Merge ev into prev, bridging the keyframe gap with linear interpolation
-        # so the redaction bar has continuous coverage across the stitched span.
-        last_kf = prev.keyframes[-1]
-        first_kf = ev.keyframes[0]
-        gap_ms = first_kf.time_ms - last_kf.time_ms
-        if gap_ms > 200:
-            steps = max(2, gap_ms // 500)
-            for i in range(1, steps):
-                t = i / steps
-                interp_ms = int(last_kf.time_ms + gap_ms * t)
-                interp_bbox = BoundingBox(
-                    x=round(last_kf.bbox.x + (first_kf.bbox.x - last_kf.bbox.x) * t),
-                    y=round(last_kf.bbox.y + (first_kf.bbox.y - last_kf.bbox.y) * t),
-                    w=round(last_kf.bbox.w + (first_kf.bbox.w - last_kf.bbox.w) * t),
-                    h=round(last_kf.bbox.h + (first_kf.bbox.h - last_kf.bbox.h) * t),
-                )
-                prev.keyframes.append(Keyframe(time_ms=interp_ms, bbox=interp_bbox))
-        prev.keyframes.extend(ev.keyframes)
-        prev.keyframes.sort(key=lambda kf: kf.time_ms)
-
-        all_starts = [tr.start_ms for tr in prev.time_ranges] + [tr.start_ms for tr in ev.time_ranges]  # noqa: E501
-        all_ends = [tr.end_ms for tr in prev.time_ranges] + [tr.end_ms for tr in ev.time_ranges]
-        prev.time_ranges = [TimeRange(start_ms=min(all_starts), end_ms=max(all_ends))]
-        prev.confidence = max(prev.confidence, ev.confidence)
-
-    return result

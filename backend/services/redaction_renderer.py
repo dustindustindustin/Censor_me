@@ -37,11 +37,6 @@ _BBOX_PAD_PCT = 0.20
 # slightly before text is visible and lingers slightly after it disappears.
 _TEMPORAL_PAD_MS = 750
 
-# EMA smoothing alpha: controls how much each frame's bbox moves toward the raw
-# tracked position. Lower = smoother but laggier; higher = more responsive.
-# 0.65 (was 0.3) — reduces visual trailing lag during fast-scrolling content.
-_EMA_ALPHA = 0.65
-
 # Merge proximity: bboxes within this many pixels of each other are merged into
 # a single redaction region to avoid thin uncensored strips between adjacent items.
 _MERGE_PROXIMITY_PX = 15
@@ -324,11 +319,15 @@ class RedactionRenderer:
         frame_h: int = 0,
     ) -> dict[int, list[tuple[RedactionEvent, tuple[int, int, int, int]]]]:
         """
-        Build frame_index → [(event, bbox)] mapping using keyframe interpolation.
+        Build frame_index → [(event, bbox, poly)] mapping.
 
-        Applies bbox padding, temporal padding (pre/post hold), and EMA smoothing.
-        Only builds entries for frames that have at least one active redaction
-        AND fall within the event's declared time_ranges (with temporal padding).
+        Rect events: computes an envelope bbox (max w/h across all keyframes,
+        padded once) and interpolates only the center position between keyframes.
+        The box size is fixed for the entire event — no size flicker.
+
+        Polygon events: uses per-keyframe vertex interpolation (unchanged).
+
+        Temporal padding (pre/post hold) is applied in both paths.
         """
         frame_map: dict[int, list] = {}
         pad_frames = int((_TEMPORAL_PAD_MS / 1000) * fps)
@@ -338,75 +337,108 @@ class RedactionRenderer:
                 continue
 
             keyframes = event.keyframes
+            has_polygon = any(getattr(kf, "polygon", None) for kf in keyframes)
 
-            # --- Core keyframe + interpolation pass ---
-            for i, kf in enumerate(keyframes):
-                frame_idx = int((kf.time_ms / 1000) * fps)
-                bbox = (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h)
-                poly = getattr(kf, "polygon", None)
-                if frame_w > 0 and frame_h > 0 and not poly:
-                    bbox = self._pad_bbox(bbox, frame_w, frame_h)
+            if has_polygon:
+                # --- Polygon path: per-keyframe interpolation (manual-draw events) ---
+                for i, kf in enumerate(keyframes):
+                    frame_idx = int((kf.time_ms / 1000) * fps)
+                    bbox = (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h)
+                    poly = getattr(kf, "polygon", None)
+                    if self._in_time_ranges(frame_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                        frame_map.setdefault(frame_idx, []).append((event, bbox, poly))
 
-                if self._in_time_ranges(frame_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                    frame_map.setdefault(frame_idx, []).append((event, bbox, poly))
-
-                # Interpolate to next keyframe
-                if i < len(keyframes) - 1:
-                    kf_next = keyframes[i + 1]
-                    next_idx = int((kf_next.time_ms / 1000) * fps)
-                    steps = next_idx - frame_idx
-
-                    for step in range(1, steps):
-                        interp_idx = frame_idx + step
-                        if self._in_time_ranges(interp_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):  # noqa: E501
+                    if i < len(keyframes) - 1:
+                        kf_next = keyframes[i + 1]
+                        next_idx = int((kf_next.time_ms / 1000) * fps)
+                        kf_next_poly = getattr(kf_next, "polygon", None)
+                        steps = next_idx - frame_idx
+                        for step in range(1, steps):
+                            interp_idx = frame_idx + step
+                            if not self._in_time_ranges(interp_idx, event.time_ranges, fps, _TEMPORAL_PAD_MS):  # noqa: E501
+                                continue
                             t = step / steps
                             interp = self._lerp_bbox(
                                 (kf.bbox.x, kf.bbox.y, kf.bbox.w, kf.bbox.h),
                                 (kf_next.bbox.x, kf_next.bbox.y, kf_next.bbox.w, kf_next.bbox.h),
                                 t,
                             )
-                            # Interpolate polygon vertices if both keyframes have polygons
                             interp_poly = None
-                            kf_next_poly = getattr(kf_next, "polygon", None)
                             if poly and kf_next_poly and len(poly) == len(kf_next_poly):
                                 interp_poly = [
                                     [int(p[0] + (n[0] - p[0]) * t), int(p[1] + (n[1] - p[1]) * t)]
                                     for p, n in zip(poly, kf_next_poly)
                                 ]
                             elif poly:
-                                interp_poly = poly  # hold polygon shape
-                            if frame_w > 0 and frame_h > 0 and not interp_poly:
-                                interp = self._pad_bbox(interp, frame_w, frame_h)
+                                interp_poly = poly
                             frame_map.setdefault(interp_idx, []).append((event, interp, interp_poly))  # noqa: E501
 
-            # --- Temporal pre-pad: hold first bbox before first keyframe ---
-            first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
-            first_bbox = (keyframes[0].bbox.x, keyframes[0].bbox.y,
-                          keyframes[0].bbox.w, keyframes[0].bbox.h)
-            first_poly = getattr(keyframes[0], "polygon", None)
-            if frame_w > 0 and frame_h > 0 and not first_poly:
-                first_bbox = self._pad_bbox(first_bbox, frame_w, frame_h)
+                first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
+                first_bbox = (keyframes[0].bbox.x, keyframes[0].bbox.y,
+                              keyframes[0].bbox.w, keyframes[0].bbox.h)
+                first_poly = getattr(keyframes[0], "polygon", None)
+                for f in range(max(0, first_kf_frame - pad_frames), first_kf_frame):
+                    if not any(e[0] is event for e in frame_map.get(f, [])):
+                        if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                            frame_map.setdefault(f, []).append((event, first_bbox, first_poly))
 
-            for f in range(max(0, first_kf_frame - pad_frames), first_kf_frame):
-                if f not in frame_map or not any(e[0] is event for e in frame_map.get(f, [])):
-                    if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                        frame_map.setdefault(f, []).append((event, first_bbox, first_poly))
+                last_kf_frame = int((keyframes[-1].time_ms / 1000) * fps)
+                last_bbox = (keyframes[-1].bbox.x, keyframes[-1].bbox.y,
+                             keyframes[-1].bbox.w, keyframes[-1].bbox.h)
+                last_poly = getattr(keyframes[-1], "polygon", None)
+                for f in range(last_kf_frame + 1, last_kf_frame + pad_frames + 1):
+                    if not any(e[0] is event for e in frame_map.get(f, [])):
+                        if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                            frame_map.setdefault(f, []).append((event, last_bbox, last_poly))
 
-            # --- Temporal post-pad: hold last bbox after last keyframe ---
-            last_kf_frame = int((keyframes[-1].time_ms / 1000) * fps)
-            last_bbox = (keyframes[-1].bbox.x, keyframes[-1].bbox.y,
-                         keyframes[-1].bbox.w, keyframes[-1].bbox.h)
-            last_poly = getattr(keyframes[-1], "polygon", None)
-            if frame_w > 0 and frame_h > 0 and not last_poly:
-                last_bbox = self._pad_bbox(last_bbox, frame_w, frame_h)
+            else:
+                # --- Rect path: envelope bbox + center-only interpolation ---
+                # Compute the max w/h across all keyframes and pad once. The box
+                # size is then fixed for the entire event; only the center moves.
+                env_w = max(kf.bbox.w for kf in keyframes)
+                env_h = max(kf.bbox.h for kf in keyframes)
+                env_w = env_w + 2 * int(env_w * _BBOX_PAD_PCT)
+                env_h = env_h + 2 * int(env_h * _BBOX_PAD_PCT)
 
-            for f in range(last_kf_frame + 1, last_kf_frame + pad_frames + 1):
-                if f not in frame_map or not any(e[0] is event for e in frame_map.get(f, [])):
-                    if self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
-                        frame_map.setdefault(f, []).append((event, last_bbox, last_poly))
+                # Pre-compute (time_ms, center_x, center_y) for each keyframe
+                kf_data = [
+                    (kf.time_ms, kf.bbox.x + kf.bbox.w / 2, kf.bbox.y + kf.bbox.h / 2)
+                    for kf in keyframes
+                ]
 
-        # --- EMA smoothing per event ---
-        self._smooth_event_bboxes(frame_map, events)
+                first_kf_frame = int((keyframes[0].time_ms / 1000) * fps)
+                last_kf_frame = int((keyframes[-1].time_ms / 1000) * fps)
+                range_start = max(0, first_kf_frame - pad_frames)
+                range_end = last_kf_frame + pad_frames
+
+                for f in range(range_start, range_end + 1):
+                    if not self._in_time_ranges(f, event.time_ranges, fps, _TEMPORAL_PAD_MS):
+                        continue
+
+                    frame_time_ms = (f / fps) * 1000
+
+                    # Interpolate center position; hold first/last outside keyframe span
+                    if frame_time_ms <= kf_data[0][0]:
+                        cx, cy = kf_data[0][1], kf_data[0][2]
+                    elif frame_time_ms >= kf_data[-1][0]:
+                        cx, cy = kf_data[-1][1], kf_data[-1][2]
+                    else:
+                        cx, cy = kf_data[-1][1], kf_data[-1][2]  # fallback
+                        for idx in range(len(kf_data) - 1):
+                            t_a, cx_a, cy_a = kf_data[idx]
+                            t_b, cx_b, cy_b = kf_data[idx + 1]
+                            if t_a <= frame_time_ms <= t_b:
+                                t = (frame_time_ms - t_a) / (t_b - t_a) if t_b > t_a else 0.0
+                                cx = cx_a + (cx_b - cx_a) * t
+                                cy = cy_a + (cy_b - cy_a) * t
+                                break
+
+                    x = int(cx - env_w / 2)
+                    y = int(cy - env_h / 2)
+                    if frame_w > 0 and frame_h > 0:
+                        x = max(0, min(x, frame_w - env_w))
+                        y = max(0, min(y, frame_h - env_h))
+                    frame_map.setdefault(f, []).append((event, (x, y, env_w, env_h), None))
 
         # --- Merge overlapping bboxes per frame ---
         for fidx in frame_map:
@@ -431,46 +463,6 @@ class RedactionRenderer:
             if start <= frame_idx <= end:
                 return True
         return False
-
-    @staticmethod
-    def _smooth_event_bboxes(
-        frame_map: dict[int, list],
-        events: list[RedactionEvent],
-    ) -> None:
-        """Apply EMA smoothing to each event's bbox sequence in frame_map.
-
-        Polygon entries are skipped (smoothing rectangular approximation
-        of a polygon would distort the intended shape).
-        """
-        for event in events:
-            # Collect sorted frame indices where this event appears
-            event_frames: list[int] = []
-            for fidx in sorted(frame_map.keys()):
-                for entry_idx, entry in enumerate(frame_map[fidx]):
-                    if entry[0] is event:
-                        event_frames.append((fidx, entry_idx))
-                        break
-
-            if len(event_frames) < 2:
-                continue
-
-            # Skip smoothing for polygon events
-            first_entry = frame_map[event_frames[0][0]][event_frames[0][1]]
-            if len(first_entry) > 2 and first_entry[2]:
-                continue
-
-            # Forward EMA pass
-            prev = first_entry[1]
-            for fidx, entry_idx in event_frames[1:]:
-                entry = frame_map[fidx][entry_idx]
-                raw = entry[1]
-                poly = entry[2] if len(entry) > 2 else None
-                smoothed = tuple(
-                    int(_EMA_ALPHA * raw[i] + (1 - _EMA_ALPHA) * prev[i])
-                    for i in range(4)
-                )
-                frame_map[fidx][entry_idx] = (entry[0], smoothed, poly)
-                prev = smoothed
 
     @staticmethod
     def _merge_overlapping(entries: list) -> list:

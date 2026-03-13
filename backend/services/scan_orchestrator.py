@@ -5,12 +5,12 @@ This is the top-level service called by ``POST /scan/start/{project_id}``.
 It runs all pipeline stages in sequence, emitting progress events after each
 frame so the frontend can update the timeline in real time via WebSocket.
 
-Pipeline stages (this module handles stages 1–5):
+Pipeline stages (this module handles stages 1–4):
   1. Sample  — Adaptive sampling determines which frames to OCR (inline motion/scene detection).
   2. OCR     — OcrService detects text regions in each sampled frame.
   3. Classify — PiiClassifier identifies PII in the detected text.
   4. Link    — EventLinker groups frame-level candidates into time-linked events.
-  5. Track   — TrackerService fills bbox positions between OCR keyframes.
+  5. Track   — (removed from auto-scan) CSRT tracking available for manual-draw path only.
   6. Review  — (UI) User accepts/rejects events in the FindingsPanel.
   7. Render  — (export) RedactionRenderer applies redactions at full resolution.
 
@@ -34,7 +34,6 @@ from backend.models.project import ProjectFile
 from backend.services.event_linker import link_candidates
 from backend.services.ocr_service import OcrService
 from backend.services.pii_classifier import PiiClassifier
-from backend.services.tracker_service import TrackerService
 from backend.utils.scene_detect import is_scene_change
 
 logger = logging.getLogger(__name__)
@@ -80,14 +79,18 @@ class ScanOrchestrator:
         self._frame_range = frame_range
 
         self._ocr = OcrService(use_gpu=use_gpu)
+        # PERSON gets a lower threshold (0.35) because Presidio/spaCy returns 0.4–0.6
+        # for isolated names, which the global 0.5 threshold drops. Project overrides
+        # take priority — they can raise or lower this further per user preference.
+        entity_overrides = {"PERSON": 0.35}
+        entity_overrides.update(project.scan_settings.entity_confidence_overrides or {})
         self._classifier = PiiClassifier(
             confidence_threshold=project.scan_settings.confidence_threshold,
-            entity_confidence_overrides=project.scan_settings.entity_confidence_overrides,
+            entity_confidence_overrides=entity_overrides,
         )
         if rules:
             self._classifier.set_custom_rules(rules)
             logger.info("Loaded %d rules into classifier.", len(rules))
-        self._tracker = TrackerService()
 
         # Face detection (lazy-loaded only if enabled in scan settings)
         self._detect_faces = project.scan_settings.detect_faces
@@ -434,27 +437,10 @@ class ScanOrchestrator:
                 self._emit({"stage": "refine_done", "events_found": len(events),
                              "extra_candidates": len(refine_candidates)})
 
-        # --- Stage 5: Track bboxes between OCR keyframes ---
-        # track_all_events() opens the video once and processes all events in a
-        # single sequential pass — O(1) video opens vs. O(N_events) in the naive
-        # per-event loop. For 50 events this is typically 10–50× faster.
-        self._emit({"stage": "tracking", "total_events": len(events)})
-
-        def _track_progress(frames_done: int, total_frames: int, active_trackers: int, time_ms: int) -> None:  # noqa: E501
-            pct = int((frames_done / total_frames) * 100) if total_frames else 0
-            self._emit({
-                "stage": "track",
-                "frames_done": frames_done,
-                "total_frames": total_frames,
-                "active_trackers": active_trackers,
-                "progress_pct": min(pct, 100),
-                "time_ms": time_ms,
-            })
-
-        tracked_events = await asyncio.to_thread(
-            self._tracker.track_all_events, events, str(video_path), fps,
-            on_progress=_track_progress,
-        )
+        # Stage 5 (CSRT tracking) removed. The renderer uses an envelope bbox
+        # (max w/h across keyframes) with center-only interpolation between OCR
+        # keyframes, which provides stable coverage without per-frame tracking.
+        # CSRT tracking is still available for manually-drawn boxes via TrackerService.
         self._emit({"stage": "track_done"})
 
-        return tracked_events
+        return events

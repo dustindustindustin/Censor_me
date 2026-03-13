@@ -447,7 +447,6 @@ async def scan_single_frame(project_id: UUID, request: Request, frame_index: int
     from backend.models.events import BoundingBox, Keyframe, RedactionEvent, TimeRange
     from backend.services.ocr_service import OcrService
     from backend.services.pii_classifier import PiiClassifier
-    from backend.services.tracker_service import TrackerService
 
     pid = str(project_id)
     proj_dir = project_dir(pid)
@@ -496,25 +495,21 @@ async def scan_single_frame(project_id: UUID, request: Request, frame_index: int
         classifier.set_custom_rules(rules)
         candidates = classifier.classify(ocr_results, safe_idx, time_ms)
 
-        new_events = []
-        tracker = TrackerService()
         default_style = project.scan_settings.default_redaction_style
+        new_events = []
         for c in candidates:
             bx, by, bw, bh = c.bbox
-            event = RedactionEvent(
+            new_events.append(RedactionEvent(
                 source="auto",
                 pii_type=c.pii_type,
                 confidence=c.confidence,
                 extracted_text=c.text if not project.scan_settings.secure_mode else None,
                 time_ranges=[TimeRange(start_ms=time_ms, end_ms=time_ms)],
                 keyframes=[Keyframe(time_ms=time_ms, bbox=BoundingBox(x=bx, y=by, w=bw, h=bh))],
-                tracking_method="csrt",
+                tracking_method="none",
                 redaction_style=default_style,
                 status="pending",
-            )
-            event = tracker.track_forward(event, str(video_path), fps)
-            event = tracker.track_backward(event, str(video_path), fps)
-            new_events.append(event)
+            ))
 
         return new_events, fps
 
