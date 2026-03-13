@@ -41,6 +41,7 @@ export function FindingsPanel({ style }: Props) {
     bulkUpdateEventStatus: bulkUpdateLocal,
     scanProgress,
     pushUndo,
+    addNotification,
   } = useProjectStore((s) => ({
     project: s.project,
     events: s.events,
@@ -50,6 +51,7 @@ export function FindingsPanel({ style }: Props) {
     bulkUpdateEventStatus: s.bulkUpdateEventStatus,
     scanProgress: s.scanProgress,
     pushUndo: s.pushUndo,
+    addNotification: s.addNotification,
   }))
 
   const [filterType, setFilterType] = useState<PiiType | 'all'>('all')
@@ -96,39 +98,63 @@ export function FindingsPanel({ style }: Props) {
 
   const handleStatus = useCallback(async (e: RedactionEvent, status: EventStatus) => {
     if (!project) return
+    const previousStatus = e.status
     pushUndo({ type: 'status', eventId: e.event_id, before: { status: e.status }, after: { status } })
     updateLocal(e.event_id, status)
-    await updateEventStatus(project.project_id, e.event_id, status)
-  }, [project, updateLocal, pushUndo])
+    try {
+      await updateEventStatus(project.project_id, e.event_id, status)
+    } catch {
+      updateLocal(e.event_id, previousStatus)
+      addNotification('Failed to save status change — please try again.', 'error')
+    }
+  }, [project, updateLocal, pushUndo, addNotification])
 
   const handleGroupStatus = useCallback(async (groupEvents: RedactionEvent[], status: EventStatus) => {
     if (!project) return
     const ids = groupEvents.map((e) => e.event_id)
+    const previousStatuses = new Map(groupEvents.map((e) => [e.event_id, e.status]))
     const beforeMap = new Map(groupEvents.map((e) => [e.event_id, e.status]))
     pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status } })
     bulkUpdateLocal(status, ids)
-    await bulkUpdateEventStatus(project.project_id, status, ids)
-  }, [project, bulkUpdateLocal, pushUndo])
+    try {
+      await bulkUpdateEventStatus(project.project_id, status, ids)
+    } catch {
+      for (const [id, prev] of previousStatuses) updateLocal(id, prev)
+      addNotification('Failed to save status changes — please try again.', 'error')
+    }
+  }, [project, updateLocal, bulkUpdateLocal, pushUndo, addNotification])
 
   const handleAcceptAll = async () => {
     if (!project) return
     const pendingEvents = filtered.filter((e) => e.status === 'pending')
     if (pendingEvents.length === 0) return
     const ids = pendingEvents.map((e) => e.event_id)
+    const previousStatuses = new Map(pendingEvents.map((e) => [e.event_id, e.status]))
     const beforeMap = new Map(pendingEvents.map((e) => [e.event_id, e.status]))
     pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status: 'accepted' } })
     bulkUpdateLocal('accepted', ids)
-    await bulkUpdateEventStatus(project.project_id, 'accepted', ids)
+    try {
+      await bulkUpdateEventStatus(project.project_id, 'accepted', ids)
+    } catch {
+      for (const [id, prev] of previousStatuses) updateLocal(id, prev)
+      addNotification('Failed to accept findings — please try again.', 'error')
+    }
   }
 
   const handleRejectAll = async () => {
     if (!project || filtered.length === 0) return
     if (!window.confirm(`Reject all ${filtered.length} visible finding(s)?`)) return
     const ids = filtered.map((e) => e.event_id)
+    const previousStatuses = new Map(filtered.map((e) => [e.event_id, e.status]))
     const beforeMap = new Map(filtered.map((e) => [e.event_id, e.status]))
     pushUndo({ type: 'bulk_status', eventIds: ids, before: beforeMap, after: { status: 'rejected' } })
     bulkUpdateLocal('rejected', ids)
-    await bulkUpdateEventStatus(project.project_id, 'rejected', ids)
+    try {
+      await bulkUpdateEventStatus(project.project_id, 'rejected', ids)
+    } catch {
+      for (const [id, prev] of previousStatuses) updateLocal(id, prev)
+      addNotification('Failed to reject findings — please try again.', 'error')
+    }
   }
 
   const toggleGroup = (key: string) =>

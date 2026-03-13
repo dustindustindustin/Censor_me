@@ -173,6 +173,7 @@ class ScanOrchestrator:
         _burst_interval = max(1, interval // 2)
 
         all_candidates = []
+        scene_change_times_ms: list[int] = []
         sampled_set: set[int] = set()
         processed = 0
         prev_gray: np.ndarray | None = None
@@ -228,6 +229,7 @@ class ScanOrchestrator:
                     if prev_gray is not None:
                         if is_scene_change(prev_bgr, frame):
                             burst_remaining = _burst_frames
+                            scene_change_times_ms.append(time_ms)
                         elif burst_remaining == 0:
                             mad = float(np.mean(
                                 np.abs(gray.astype(np.int16) - prev_gray.astype(np.int16))
@@ -355,7 +357,7 @@ class ScanOrchestrator:
                 "progress_pct": min(pct, 100),
             })
 
-        events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)  # noqa: E501
+        events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style, scene_change_times_ms=scene_change_times_ms)  # noqa: E501
         self._emit({"stage": "link_done", "events_found": len(events)})
 
         # --- Stage 4.5: Boundary Refinement ---
@@ -433,7 +435,7 @@ class ScanOrchestrator:
 
             if refine_candidates:
                 all_candidates.extend(refine_candidates)
-                events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style)  # noqa: E501
+                events = link_candidates(all_candidates, on_progress=_link_progress, default_style=default_style, scene_change_times_ms=scene_change_times_ms)  # noqa: E501
                 self._emit({"stage": "refine_done", "events_found": len(events),
                              "extra_candidates": len(refine_candidates)})
 

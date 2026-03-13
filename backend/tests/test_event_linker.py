@@ -83,3 +83,30 @@ class TestSpatialTolerance:
         c3 = make_candidate(time_ms=200, bbox=(100, 620, 80, 20))  # 500px from last center
         events = link_candidates([c1, c2, c3])
         assert len(events) == 2, "Position jump beyond spatial tolerance should split"
+
+
+# ---------------------------------------------------------------------------
+# Scene-aware linking
+# ---------------------------------------------------------------------------
+
+class TestSceneAwareLinking:
+    def test_scene_cut_prevents_merge(self):
+        """Candidates on opposite sides of a scene cut must NOT merge."""
+        c1 = make_candidate(time_ms=1000, bbox=(100, 100, 80, 20))
+        c2 = make_candidate(time_ms=2000, bbox=(100, 100, 80, 20))
+        events = link_candidates([c1, c2], scene_change_times_ms=[1500])
+        assert len(events) == 2, "Scene cut should force split even within time gap"
+
+    def test_no_scene_cut_still_merges(self):
+        """Without a cut, candidates within gap+distance still merge."""
+        c1 = make_candidate(time_ms=1000, bbox=(100, 100, 80, 20))
+        c2 = make_candidate(time_ms=2000, bbox=(100, 100, 80, 20))
+        events = link_candidates([c1, c2], scene_change_times_ms=[])
+        assert len(events) == 1
+
+    def test_scene_cut_before_window_does_not_split(self):
+        """A cut that predates both candidates should not affect their merge."""
+        c1 = make_candidate(time_ms=2000, bbox=(100, 100, 80, 20))
+        c2 = make_candidate(time_ms=3000, bbox=(100, 100, 80, 20))
+        events = link_candidates([c1, c2], scene_change_times_ms=[500])
+        assert len(events) == 1

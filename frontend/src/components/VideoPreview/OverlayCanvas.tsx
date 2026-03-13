@@ -909,12 +909,18 @@ export function OverlayCanvas({
 }
 
 /**
- * Linearly interpolate a bounding box at a given time using keyframe data.
+ * Interpolate a bounding box at a given time using keyframe data.
+ * Uses a fixed envelope size (max w/h across all keyframes) and interpolates
+ * center position only — matching what the backend renderer produces.
  */
 function interpolateBbox(event: RedactionEvent, timeMs: number): BoundingBox | null {
   const kfs = event.keyframes
   if (!kfs || kfs.length === 0) return null
   if (kfs.length === 1) return kfs[0].bbox
+
+  // Fixed envelope: max dimensions across all keyframes (stable size, no morph)
+  const envW = Math.max(...kfs.map((k) => k.bbox.w))
+  const envH = Math.max(...kfs.map((k) => k.bbox.h))
 
   let before: Keyframe | null = null
   let after: Keyframe | null = null
@@ -927,15 +933,30 @@ function interpolateBbox(event: RedactionEvent, timeMs: number): BoundingBox | n
     }
   }
 
-  if (before && !after) return before.bbox
-  if (after && !before) return after.bbox
-  if (!before || !after) return null
+  let cx: number
+  let cy: number
+  if (before && !after) {
+    cx = before.bbox.x + before.bbox.w / 2
+    cy = before.bbox.y + before.bbox.h / 2
+  } else if (after && !before) {
+    cx = after.bbox.x + after.bbox.w / 2
+    cy = after.bbox.y + after.bbox.h / 2
+  } else if (before && after) {
+    const t = (timeMs - before.time_ms) / (after.time_ms - before.time_ms)
+    const bcx = before.bbox.x + before.bbox.w / 2
+    const bcy = before.bbox.y + before.bbox.h / 2
+    const acx = after.bbox.x + after.bbox.w / 2
+    const acy = after.bbox.y + after.bbox.h / 2
+    cx = bcx + (acx - bcx) * t
+    cy = bcy + (acy - bcy) * t
+  } else {
+    return null
+  }
 
-  const t = (timeMs - before.time_ms) / (after.time_ms - before.time_ms)
   return {
-    x: Math.round(before.bbox.x + (after.bbox.x - before.bbox.x) * t),
-    y: Math.round(before.bbox.y + (after.bbox.y - before.bbox.y) * t),
-    w: Math.round(before.bbox.w + (after.bbox.w - before.bbox.w) * t),
-    h: Math.round(before.bbox.h + (after.bbox.h - before.bbox.h) * t),
+    x: Math.round(cx - envW / 2),
+    y: Math.round(cy - envH / 2),
+    w: envW,
+    h: envH,
   }
 }

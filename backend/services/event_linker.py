@@ -8,6 +8,7 @@ Linking criteria:
 Output: list of RedactionEvent with time ranges and keyframes populated.
 """
 
+import bisect
 from typing import Callable
 
 from backend.models.events import (
@@ -36,15 +37,26 @@ def _center_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
 
 
+def _has_scene_cut_between(t_start: int, t_end: int, scene_cuts: list[int]) -> bool:
+    """Return True if any scene cut timestamp falls strictly between t_start and t_end."""
+    if not scene_cuts:
+        return False
+    idx = bisect.bisect_right(scene_cuts, t_start)
+    return idx < len(scene_cuts) and scene_cuts[idx] < t_end
+
+
 def link_candidates(
     candidates: list[PiiCandidate],
     on_progress: Callable[[int, int], None] | None = None,
     default_style: RedactionStyle | None = None,
+    scene_change_times_ms: list[int] | None = None,
 ) -> list[RedactionEvent]:
     """
     Group PII candidates from all frames into time-linked RedactionEvents.
     Returns a list of events sorted by start time.
     """
+    scene_cuts = sorted(scene_change_times_ms) if scene_change_times_ms else []
+
     # Sort candidates by time
     sorted_candidates = sorted(candidates, key=lambda c: c.source_time_ms)
     total = len(sorted_candidates)
@@ -53,7 +65,7 @@ def link_candidates(
     events: list[RedactionEvent] = []
 
     for i, candidate in enumerate(sorted_candidates):
-        matched_event = _find_matching_event(candidate, events)
+        matched_event = _find_matching_event(candidate, events, scene_cuts)
 
         if matched_event:
             _extend_event(matched_event, candidate)
@@ -72,6 +84,7 @@ def link_candidates(
 def _find_matching_event(
     candidate: PiiCandidate,
     events: list[RedactionEvent],
+    scene_cuts: list[int] = [],
 ) -> RedactionEvent | None:
     """
     Find an existing event that this candidate should be merged into.
@@ -99,6 +112,10 @@ def _find_matching_event(
         # Check time proximity: is the last keyframe within the gap threshold?
         last_kf_time = event.keyframes[-1].time_ms
         if candidate.source_time_ms - last_kf_time > _TIME_GAP_THRESHOLD_MS:
+            continue
+
+        # Reject merge if a scene cut falls between the last keyframe and this candidate.
+        if _has_scene_cut_between(last_kf_time, candidate.source_time_ms, scene_cuts):
             continue
 
         # Check spatial proximity against the raw last keyframe center.

@@ -83,7 +83,7 @@ class RedactionStyle(BaseModel):
     - solid_box: ``strength`` is unused; ``color`` sets the fill color.
     """
 
-    type: Literal["blur", "pixelate", "solid_box"] = "blur"
+    type: Literal["blur", "pixelate", "solid_box"] = "solid_box"
     strength: int = Field(
         default=15, ge=1, le=100,
         description="Blur radius (blur), block size (pixelate), or unused (solid_box)."
